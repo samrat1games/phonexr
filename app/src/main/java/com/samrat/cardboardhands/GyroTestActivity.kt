@@ -72,7 +72,7 @@ class GyroTestActivity : ComponentActivity() {
         ) {
             if (Build.VERSION.SDK_INT < 31) {
                 HigSection(footer = "Датчики Joy‑Con Android отдаёт приложениям только с Android 12.") {
-                    HigRow("Нужен Android 12 или новее", detailColor = CupertinoColors.systemRed)
+                    HigRow("Нужен Android 12 или новее", detailColor = HigColors.bad)
                 }
                 return@HigPage
             }
@@ -109,18 +109,18 @@ class GyroTestActivity : ComponentActivity() {
 
     @Composable
     private fun verdict(motion: JoyConTracker.Motion): Pair<String, Color> = when {
-        !motion.connected -> "Не подключён — подключите по Bluetooth" to CupertinoTheme.colorScheme.secondaryLabel
+        !motion.connected -> "Не подключён — подключите по Bluetooth" to HigColors.secondary
         motion.sensors.none { it == "гироскоп" || it == "ориентация" } ->
-            "Подключён, но гироскопа нет" to CupertinoColors.systemRed
-        motion.rateHz < 1f -> "Гироскоп есть, но данные не приходят" to CupertinoColors.systemRed
-        else -> "Гироскоп работает" to CupertinoColors.systemGreen
+            "Подключён, но гироскопа нет" to HigColors.bad
+        motion.rateHz < 1f -> "Гироскоп есть, но данные не приходят" to HigColors.bad
+        else -> "Гироскоп работает" to HigColors.good
     }
 
     @Composable
     private fun Cube(pose: JoyConTracker.Pose, motion: JoyConTracker.Motion, modifier: Modifier) {
         val working = motion.rateHz >= 1f
-        val color = if (working) CupertinoTheme.colorScheme.accent else CupertinoTheme.colorScheme.tertiaryLabel
-        val accent = if (working) CupertinoColors.systemGreen else CupertinoTheme.colorScheme.quaternaryLabel
+        val color = if (working) HigColors.accent else CupertinoTheme.colorScheme.tertiaryLabel
+        val accent = if (working) HigColors.good else CupertinoTheme.colorScheme.quaternaryLabel
         Canvas(modifier = modifier.aspectRatio(1f)) {
             val scale = min(size.width, size.height) * .22f
             val center = Offset(size.width / 2f, size.height / 2f)

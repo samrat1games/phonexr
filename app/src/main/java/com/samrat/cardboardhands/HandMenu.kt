@@ -48,7 +48,7 @@ class HandMenu(val holderLeft: Boolean, private val items: List<Item>) {
         val u = (px - (x - HALF_W)) / (HALF_W * 2)
         val v = ((y + HALF_H) - py) / (HALF_H * 2)
         if (u !in 0f..1f || v !in 0f..1f) return -1
-        return ((u * WIDTH - PAD) / SLOT).toInt().takeIf { it in items.indices } ?: -1
+        return ((u * WIDTH - PAD) / slot).toInt().takeIf { it in items.indices } ?: -1
     }
 
     fun contains(px: Float, py: Float) = !x.isNaN() && kotlin.math.abs(px - x) <= HALF_W && kotlin.math.abs(py - y) <= HALF_H
@@ -71,12 +71,12 @@ class HandMenu(val holderLeft: Boolean, private val items: List<Item>) {
         canvas.drawRoundRect(card, 90f, 90f, paint)
         paint.style = Paint.Style.FILL
         items.forEachIndexed { i, item ->
-            val cx = PAD + SLOT * i + SLOT / 2
+            val cx = PAD + slot * i + slot / 2
             val cy = 100f
             val r = if (i == hovered) 62f else 54f
             if (i == hovered) {
                 paint.color = Color.argb(60, 255, 255, 255)
-                canvas.drawRoundRect(RectF(cx - SLOT / 2 + 8f, 22f, cx + SLOT / 2 - 8f, HEIGHT - 22f), 50f, 50f, paint)
+                canvas.drawRoundRect(RectF(cx - slot / 2 + 8f, 22f, cx + slot / 2 - 8f, HEIGHT - 22f), 50f, 50f, paint)
             }
             val circle = RectF(cx - r, cy - r, cx + r, cy + r)
             canvas.save()
@@ -89,12 +89,13 @@ class HandMenu(val holderLeft: Boolean, private val items: List<Item>) {
     }
 
     companion object {
-        const val WIDTH = 1080
+        const val WIDTH = 720
         const val HEIGHT = 240
         private const val PAD = 30f
-        private const val SLOT = (WIDTH - 2 * PAD) / 6f
         /** Size in head space (tangent units, about metres at arm's length). */
-        const val HALF_W = .30f
+        const val HALF_W = .24f
         const val HALF_H = HALF_W * HEIGHT / WIDTH
     }
+
+    private val slot get() = (WIDTH - 2 * PAD) / items.size.coerceAtLeast(1)
 }

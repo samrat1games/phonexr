@@ -102,6 +102,37 @@ object L10n {
         "Лицо" to arrayOf("Persona", "Persona", "Persona"),
         "Добавить лицо" to arrayOf("Add Persona", "Adicionar Persona", "Adicionar Persona"),
         "Показать лицо" to arrayOf("Show Persona", "Mostrar Persona", "Mostrar Persona"),
+        "Сканирование лица" to arrayOf("Face scan", "Escaneamento facial", "Digitalização facial"),
+        "Начать сканирование" to arrayOf("Start scanning", "Iniciar escaneamento", "Iniciar digitalização"),
+        "Сканировать камерой" to arrayOf("Scan with camera", "Escanear com a câmera", "Digitalizar com a câmara"),
+        "Сканировать заново" to arrayOf("Scan again", "Escanear novamente", "Digitalizar novamente"),
+        "Не вынимайте телефон · покажите лицо камере шлема" to arrayOf("Keep the phone in the headset · show your face to its camera", "Mantenha o celular no headset · mostre o rosto à câmera", "Mantenha o telemóvel no headset · mostre o rosto à câmara"),
+        "Смотрите прямо" to arrayOf("Look straight ahead", "Olhe para frente", "Olhe em frente"),
+        "Медленно поверните голову влево" to arrayOf("Slowly turn your head left", "Vire a cabeça devagar para a esquerda", "Rode lentamente a cabeça para a esquerda"),
+        "Теперь поверните голову вправо" to arrayOf("Now turn your head right", "Agora vire a cabeça para a direita", "Agora rode a cabeça para a direita"),
+        "Слегка поднимите подбородок" to arrayOf("Raise your chin slightly", "Levante um pouco o queixo", "Levante ligeiramente o queixo"),
+        "Слегка опустите подбородок" to arrayOf("Lower your chin slightly", "Abaixe um pouco o queixo", "Baixe ligeiramente o queixo"),
+        "Лицо не видно" to arrayOf("Face not visible", "Rosto não visível", "Rosto não visível"),
+        "Лицо в центр рамки" to arrayOf("Center your face in the frame", "Centralize o rosto", "Centre o rosto"),
+        "Приблизьте лицо к камере шлема" to arrayOf("Move your face closer to the headset camera", "Aproxime o rosto da câmera do headset", "Aproxime o rosto da câmara do headset"),
+        "Камера шлема недоступна" to arrayOf("Headset camera unavailable", "Câmera do headset indisponível", "Câmara do headset indisponível"),
+        "Создаю персону…" to arrayOf("Building your Persona…", "Criando sua Persona…", "A criar a sua Persona…"),
+        "Покажите руки" to arrayOf("Show your hands", "Mostre as mãos", "Mostre as mãos"),
+        "Держите обе руки перед собой, пальцы раскрыты. Не двигайтесь пару секунд." to arrayOf(
+            "Hold both hands in front of you with fingers open. Keep still for a few seconds.",
+            "Mantenha as duas mãos à frente, com os dedos abertos. Fique parado por alguns segundos.",
+            "Mantenha as duas mãos à frente, com os dedos abertos. Fique parado durante alguns segundos."
+        ),
+        "Не вынимайте телефон из шлема. Покажите лицо внешней камере и медленно поворачивайте голову. Затылок сканировать не нужно." to arrayOf(
+            "Keep the phone in the headset. Show your face to its outward camera and slowly turn your head. The back is not needed.",
+            "Mantenha o celular no headset. Mostre o rosto à câmera externa e vire a cabeça devagar. Não é preciso mostrar a parte de trás.",
+            "Mantenha o telemóvel no headset. Mostre o rosto à câmara externa e rode a cabeça devagar. Não é necessário mostrar a parte de trás."
+        ),
+        "Следуйте подсказкам камеры: прямо, влево, вправо, вверх и вниз." to arrayOf(
+            "Follow the camera prompts: front, left, right, up and down.",
+            "Siga as instruções da câmera: frente, esquerda, direita, cima e baixo.",
+            "Siga as instruções da câmara: frente, esquerda, direita, cima e baixo."
+        ),
         "Настроить границу" to arrayOf("Set up boundary", "Configurar limite", "Configurar limite"),
         "Удалить границу" to arrayOf("Remove boundary", "Remover limite", "Remover limite"),
         "Калибровка рук" to arrayOf("Hand calibration", "Calibração das mãos", "Calibração das mãos"),

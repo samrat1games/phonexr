@@ -5,7 +5,6 @@ import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -14,17 +13,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import zone.ien.hig.CupertinoAlertDialog
-import zone.ien.hig.CupertinoSwitch
-import zone.ien.hig.CupertinoText
-import zone.ien.hig.ExperimentalCupertinoApi
-import zone.ien.hig.cancel
-import zone.ien.hig.default
-import zone.ien.hig.section.SectionItem
-import zone.ien.hig.theme.CupertinoColors
-import zone.ien.hig.theme.CupertinoTheme
-import zone.ien.hig.theme.systemGreen
-import zone.ien.hig.theme.systemRed
 import kotlin.math.roundToInt
 
 class SettingsActivity : ComponentActivity() {
@@ -76,17 +64,20 @@ class SettingsActivity : ComponentActivity() {
         Settings.save(this, next)
     }
 
-    @OptIn(ExperimentalCupertinoApi::class)
     @Composable
     private fun Screen() {
         HigPage(title = "Управление", onBack = ::finish) {
             HigSection(
                 title = "Отслеживание",
-                footer = "Без 6DoF рука остаётся на постоянном расстоянии и только поворачивается."
+                footer = "3DoF работает на любом телефоне. 6DoF добавляет перемещение в комнате через ARCore."
             ) {
-                SectionItem(trailingContent = {
-                    CupertinoSwitch(checked = state.sixDof, onCheckedChange = { update(state.copy(sixDof = it)) })
-                }) { CupertinoText("6DoF по камере") }
+                HigChoice("3DoF", "Поворот головы без перемещения", !state.sixDof) {
+                    update(state.copy(sixDof = false))
+                }
+                if (BuildConfig.LITE) HigRow("6DoF", "Только в PhoneXR Full", detailColor = HigColors.secondary)
+                else HigChoice("6DoF", "Поворот и перемещение через ARCore", state.sixDof) {
+                    update(state.copy(sixDof = true))
+                }
             }
 
             HigSection(title = "Руки") {
@@ -112,7 +103,7 @@ class SettingsActivity : ComponentActivity() {
                 HigRow(
                     "Перехват кнопок",
                     if (interceptEnabled) "Включён" else "Выключен",
-                    detailColor = if (interceptEnabled) CupertinoColors.systemGreen else CupertinoColors.systemRed
+                    detailColor = if (interceptEnabled) HigColors.good else HigColors.bad
                 )
                 if (!interceptEnabled) {
                     HigLink("Включить перехват") { startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -136,19 +127,24 @@ class SettingsActivity : ComponentActivity() {
                 }
             }
 
-            HigSection(
+            if (!BuildConfig.LITE) HigSection(
                 title = "Метки на Joy‑Con",
                 footer = "Самый точный режим: камера видит напечатанные метки ArUco и даёт положение и полный поворот. " +
                     "Распечатайте markers/joycon_markers_A4.pdf в масштабе 100%. ID 0–3 — левый Joy‑Con, 4–7 — правый: " +
                     "слева, середина (сторона с кнопками), справа, сверху. Ровно держите Joy‑Con кнопками к себе, " +
                     "верхом вверх — это «вперёд». После включения остановите и снова запустите трекинг."
             ) {
-                SectionItem(trailingContent = {
-                    CupertinoSwitch(
-                        checked = state.markerJoyCons,
-                        onCheckedChange = { update(state.copy(markerJoyCons = it)) }
-                    )
-                }) { CupertinoText("Отслеживать по меткам") }
+                HigSwitchRow("Отслеживать по меткам", state.markerJoyCons) { update(state.copy(markerJoyCons = it)) }
+            }
+
+            HigSection(
+                title = "Контроллеры",
+                footer = "PhoneXR принимает любые геймпады: Joy‑Con, DualShock, Xbox и безымянные. " +
+                    "Один геймпад работает за две руки: левый стик и кнопки X/Y/L — левая рука, правый стик и A/B/R — правая."
+            ) {
+                val found = JoyConButtons.names()
+                if (found.isEmpty()) HigRow("Ничего не подключено", "Подключите геймпад по Bluetooth", detailColor = HigColors.secondary)
+                else found.forEach { name -> HigRow(name, "Подключён", detailColor = HigColors.good) }
             }
 
             HigSection(
@@ -177,8 +173,8 @@ class SettingsActivity : ComponentActivity() {
     /** Joy-Con rotation needs a gyroscope, and not every Android kernel exposes one. */
     @Composable
     private fun gyroStatus(): Pair<String, androidx.compose.ui.graphics.Color> {
-        val secondary = CupertinoTheme.colorScheme.secondaryLabel
-        if (android.os.Build.VERSION.SDK_INT < 31) return "Нужен Android 12 или новее" to CupertinoColors.systemRed
+        val secondary = HigColors.secondary
+        if (android.os.Build.VERSION.SDK_INT < 31) return "Нужен Android 12 или новее" to HigColors.bad
         val devices = android.view.InputDevice.getDeviceIds().toList()
             .mapNotNull { id -> android.view.InputDevice.getDevice(id) }
             .filter { device -> JoyConButtons.isJoyCon(device) }
@@ -190,8 +186,8 @@ class SettingsActivity : ComponentActivity() {
                     sensor.type == android.hardware.Sensor.TYPE_ROTATION_VECTOR
             }
         }
-        return if (withGyro > 0) "Есть у $withGyro из ${devices.size}: поворот руки работает без камеры" to CupertinoColors.systemGreen
-        else "Недоступны — поворот руки берётся только с камеры" to CupertinoColors.systemRed
+        return if (withGyro > 0) "Есть у $withGyro из ${devices.size}: поворот руки работает без камеры" to HigColors.good
+        else "Недоступны — поворот руки берётся только с камеры" to HigColors.bad
     }
 
     private fun stick(live: JoyConButtons.Live) =
@@ -202,39 +198,33 @@ class SettingsActivity : ComponentActivity() {
             .joinToString(", ") { it.title }
             .ifEmpty { "ничего не нажато" }
 
-    @OptIn(ExperimentalCupertinoApi::class)
     @Composable
     private fun LearningDialog() {
         val stop = {
             learning = false
             JoyConBridge.watch(this, watching = true, learning = false)
         }
-        CupertinoAlertDialog(
-            onDismissRequest = stop,
-            title = { CupertinoText("Нажмите кнопку на Joy‑Con") },
-            message = { CupertinoText("PhoneXR ждёт нажатия. Дальше выберите, что эта кнопка делает в VR.") }
-        ) { cancel(onClick = stop) { CupertinoText("Отмена") } }
+        HigAlert(
+            title = "Нажмите кнопку на Joy‑Con",
+            message = "PhoneXR ждёт нажатия. Дальше выберите, что эта кнопка делает в VR.",
+            actions = listOf(HigAction(tr("Отмена"), HigActionStyle.CANCEL, stop)),
+            onDismiss = stop
+        )
     }
 
-    @OptIn(ExperimentalCupertinoApi::class)
     @Composable
     private fun ActionDialog(keyCode: Int) {
-        CupertinoAlertDialog(
-            onDismissRequest = { pickedKey = null },
-            title = { CupertinoText("Кнопка ${Settings.keyName(keyCode)}") },
-            message = { CupertinoText("Что она делает в VR:") },
-            buttonsOrientation = Orientation.Vertical
-        ) {
-            Settings.Action.entries.forEach { action ->
-                default(onClick = {
-                    update(state.copy(bindings = state.bindings + (keyCode to action)))
-                    pickedKey = null
-                }) {
-                    val current = if (state.bindings[keyCode] == action) " ✓" else ""
-                    CupertinoText("${action.title}$current")
-                }
+        val actions = Settings.Action.entries.map { action ->
+            HigAction(action.title + if (state.bindings[keyCode] == action) " ✓" else "") {
+                update(state.copy(bindings = state.bindings + (keyCode to action)))
+                pickedKey = null
             }
-            cancel(onClick = { pickedKey = null }) { CupertinoText("Отмена") }
-        }
+        } + HigAction(tr("Отмена"), HigActionStyle.CANCEL) { pickedKey = null }
+        HigAlert(
+            title = "Кнопка ${Settings.keyName(keyCode)}",
+            message = "Что она делает в VR:",
+            actions = actions,
+            onDismiss = { pickedKey = null }
+        )
     }
 }

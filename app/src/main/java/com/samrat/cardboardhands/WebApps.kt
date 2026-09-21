@@ -61,7 +61,8 @@ object WebApps {
     }
 
     /** Network call: the store's web apps. */
-    fun fromStore(): List<App> = runCatching { parse(GameStore.readText("pwa.json")) }.getOrDefault(emptyList())
+    fun fromStore(): List<App> = runCatching { parse(GameStore.readText("pwa.json")) }
+        .getOrDefault(BUILT_IN).distinctBy { it.url }
 
     /** Network call: an app icon, cached in memory for the session. */
     fun icon(app: App): Bitmap? {
@@ -85,4 +86,21 @@ object WebApps {
             App(item.optString("name", url), url, item.optString("icon").takeIf { it.isNotBlank() })
         }
     }
+
+    /** Useful PWAs remain available even when the remote Supabase catalogue is empty/offline. */
+    private val BUILT_IN = listOf(
+        App("YouTube", "https://m.youtube.com", null), App("YouTube Music", "https://music.youtube.com", null),
+        App("Google Maps", "https://maps.google.com", null), App("Google Drive", "https://drive.google.com", null),
+        App("Google Docs", "https://docs.google.com", null), App("Google Sheets", "https://sheets.google.com", null),
+        App("Google Calendar", "https://calendar.google.com", null), App("Gmail", "https://mail.google.com", null),
+        App("Google Photos", "https://photos.google.com", null), App("Google Keep", "https://keep.google.com", null),
+        App("Spotify", "https://open.spotify.com", null), App("Discord", "https://discord.com/app", null),
+        App("Telegram", "https://web.telegram.org", null), App("WhatsApp", "https://web.whatsapp.com", null),
+        App("Reddit", "https://www.reddit.com", null), App("Pinterest", "https://www.pinterest.com", null),
+        App("GitHub", "https://github.com", null), App("Figma", "https://www.figma.com", null),
+        App("Notion", "https://www.notion.so", null), App("Canva", "https://www.canva.com", null),
+        App("Photopea", "https://www.photopea.com", null), App("Excalidraw", "https://excalidraw.com", null),
+        App("Wikipedia", "https://www.wikipedia.org", null), App("Internet Archive", "https://archive.org", null),
+        App("Chess", "https://lichess.org", null), App("GeForce NOW", "https://play.geforcenow.com", null),
+    )
 }

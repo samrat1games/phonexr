@@ -53,6 +53,21 @@ class PhoneXRInputTest {
     }
 
     @Test
+    fun readsContinuousFingerCurlsFromPh6() {
+        val ph6 = "PH6 1 0 0 0 .3 .4 .5 0 0 0 1 0 0 0 .10 .20 .30 .40 .50 " +
+            "1 0 0 0 .7 .4 .6 0 0 0 1 0 0 0 .90 .80 .70 .60 .50 1 1 0 0 1"
+        PhoneXRInput(port = 42463).use { input ->
+            send(42463, ph6)
+            val state = requireNotNull(input.read())
+            assertEquals(.1f, state.left.thumbCurl, .0001f)
+            assertEquals(.5f, state.left.pinkyCurl, .0001f)
+            assertEquals(.8f, state.right.indexCurl, .0001f)
+            assertTrue(state.left.pinch)
+            assertTrue(state.right.palmToFace)
+        }
+    }
+
+    @Test
     fun ignoresPacketsFromAnotherProtocolVersion() {
         PhoneXRInput(port = 42461).use { input ->
             send(42461, "PH2 1 0 0 0 0.5 0.5 0.5")

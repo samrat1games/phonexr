@@ -28,7 +28,11 @@ object HandGestures {
         val aimX: Float = pinchX,
         val aimY: Float = pinchY,
         /** Thumb-index distance in palm widths; feed it to a [PinchLatch] for a steady click. */
-        val pinchGap: Float = 1f
+        val pinchGap: Float = 1f,
+        /** Fingertip cursor and pose used for tablet-like direct touch on app windows. */
+        val indexX: Float = aimX,
+        val indexY: Float = aimY,
+        val indexExtended: Boolean = false,
     )
 
     /**
@@ -66,7 +70,10 @@ object HandGestures {
             palmWidth = palm,
             aimX = p[2].x() * .3f + p[5].x() * .45f + (p[4].x() + p[8].x()) / 2 * .25f,
             aimY = p[2].y() * .3f + p[5].y() * .45f + (p[4].y() + p[8].y()) / 2 * .25f,
-            pinchGap = gap
+            pinchGap = gap,
+            indexX = p[8].x(),
+            indexY = p[8].y(),
+            indexExtended = d(0, 8) > d(0, 6) * 1.12f,
         )
     }
 

@@ -50,6 +50,13 @@ class CinemaActivity : Activity(), LifecycleOwner {
     private lateinit var renderer: CinemaRenderer
     private lateinit var tracker: HeadTracker
     private var connection: ServiceConnection? = null
+    /** A Bluetooth mouse or a second phone aiming at the screen. */
+    private var pointer: CinemaPointer? = null
+    /** A second phone held as a pointer, when one is on the network. */
+    private val controller = PhoneController.Listener()
+    /** While a real keyboard is being typed on, the desk is shown under the screen. */
+    private var keyboardWindowAllowed = true
+    @Volatile private var lastKeyAt = 0L
     @Volatile private var service: IDisplayService? = null
     @Volatile private var surface: Surface? = null
     @Volatile private var displayId = -1
@@ -85,15 +92,42 @@ class CinemaActivity : Activity(), LifecycleOwner {
             val shortSide = minOf(metrics.widthPixels, metrics.heightPixels)
             renderer.screenW = longSide / 2
             renderer.screenH = shortSide
+        } else {
+            // The shape the user picked: a wider picture means a wider virtual display, bent around
+            // the viewer so its far edges stay readable.
+            val shape = Settings.screenShape(this)
+            renderer.screenW = shape.width
+            renderer.screenH = shape.height
+            renderer.curved = Settings.curvedScreen(this) && shape != Settings.ScreenShape.NORMAL
         }
+        renderer.eyes = Eyes.load(this)
         tracker = HeadTracker(getSystemService(SensorManager::class.java)) { display }
         renderer.head = tracker.head
         renderer.scene = if (sceneName == SCENE_ROOM) CinemaRenderer.Scene.ROOM else CinemaRenderer.Scene.SKY
+        pointer = CinemaPointer(
+            placement = { renderer.screenPlacement },
+            onCursor = { renderer.pointer = it },
+            inject = { event ->
+                val id = displayId
+                if (id >= 0) runCatching { service?.injectMotion(event, id) }
+            },
+            injectKey = { event ->
+                val id = displayId
+                if (id >= 0) runCatching { service?.injectKey(event, id) }
+            },
+        ).also {
+            it.screenWidth = renderer.screenW
+            it.screenHeight = renderer.screenH
+        }
         surfaceView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(2)
             setRenderer(renderer)
             // A tap on the phone recenters the view to where the head looks now.
             setOnClickListener { tracker.recenter() }
+            // A captured mouse reports how far it moved instead of where it is, which is what a
+            // pointer on a screen three metres away needs.
+            isFocusableInTouchMode = true
+            setOnCapturedPointerListener { _, event -> onMouse(event) }
         }
         setContentView(surfaceView)
 
@@ -147,6 +181,74 @@ class CinemaActivity : Activity(), LifecycleOwner {
             handTracker = runCatching { HandTracker(this, useGpu = true) { hands?.onResult(it) } }
                 .getOrElse { HandTracker(this, useGpu = false) { hands?.onResult(it) } }
         }
+
+        keyboardWindowAllowed = Settings.keyboardWindow(this)
+        // A second phone, if one is pointing: its aim becomes the cursor, its trigger a touch.
+        controller.start()
+        thread(name = "PhoneXR controller aim") {
+            var pressed = false
+            var backWasDown = false
+            while (running) {
+                val aim = controller.direction()
+                val heard = controller.aim
+                if (aim != null && heard != null) {
+                    pointer?.aim(aim)
+                    if (heard.trigger != pressed) {
+                        pressed = heard.trigger
+                        pointer?.trigger(pressed)
+                    }
+                    if (heard.back && !backWasDown) pointer?.back()
+                    backWasDown = heard.back
+                } else if (pressed) {
+                    pressed = false
+                    pointer?.trigger(false)
+                }
+                // The desk window stays a few seconds after the last key, so looking down works.
+                renderer.keyboardWindow = keyboardWindowAllowed &&
+                    android.os.SystemClock.elapsedRealtime() - lastKeyAt < KEYBOARD_WINDOW_MS
+                Thread.sleep(16)
+            }
+        }
+    }
+
+    /**
+     * A captured mouse: moves are relative, the left button presses the screen, the right one goes
+     * back and the wheel scrolls.
+     */
+    private fun onMouse(event: MotionEvent): Boolean {
+        val aim = pointer ?: return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE ->
+                aim.mouseMoved(event.getAxisValue(MotionEvent.AXIS_RELATIVE_X), event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y))
+            MotionEvent.ACTION_SCROLL -> aim.scroll(event.getAxisValue(MotionEvent.AXIS_VSCROLL))
+        }
+        aim.mouseButtons(event.buttonState)
+        return true
+    }
+
+    /**
+     * Without pointer capture (some launchers and ROMs refuse it) the mouse still reports where it
+     * is on this view; the difference between two reports moves the pointer just the same.
+     */
+    private var lastMouseX = Float.NaN
+    private var lastMouseY = Float.NaN
+
+    private fun onLooseMouse(event: MotionEvent): Boolean {
+        val aim = pointer ?: return false
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            aim.scroll(event.getAxisValue(MotionEvent.AXIS_VSCROLL))
+            return true
+        }
+        if (!lastMouseX.isNaN()) aim.mouseMoved(event.x - lastMouseX, event.y - lastMouseY)
+        lastMouseX = event.x
+        lastMouseY = event.y
+        aim.mouseButtons(event.buttonState)
+        return true
+    }
+
+    /** True when a mouse is plugged in or paired; only then is it worth grabbing the pointer. */
+    private fun mouseConnected() = InputDevice.getDeviceIds().any { id ->
+        InputDevice.getDevice(id)?.supportsSource(InputDevice.SOURCE_MOUSE) == true
     }
 
     /** The back camera feeds the hands; the picture itself is never shown in the cinema. */
@@ -163,6 +265,12 @@ class CinemaActivity : Activity(), LifecycleOwner {
                 try {
                     if (busy.compareAndSet(false, true)) {
                         val upright: Bitmap = image.toBitmap().rotate(image.imageInfo.rotationDegrees)
+                        // The keyboard window shows this same picture, scaled down to a texture.
+                        if (renderer.keyboardWindow) {
+                            val height = (WINDOW_TEXTURE_W * upright.height / upright.width).coerceAtLeast(1)
+                            runCatching { Bitmap.createScaledBitmap(upright, WINDOW_TEXTURE_W, height, true) }
+                                .getOrNull()?.let { renderer.handFrame(it) }
+                        }
                         val timestamp = image.imageInfo.timestamp / 1_000_000L
                         trackingExecutor.execute {
                             try {
@@ -189,10 +297,16 @@ class CinemaActivity : Activity(), LifecycleOwner {
     override fun onResume() {
         super.onResume()
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        DisplayRate.apply(this)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) bindCamera()
         surfaceView.onResume()
+        tracker.travelMode = Settings.travelMode(this)
         tracker.start()
         setJoyConPassthrough(this, true)
+        if (mouseConnected()) {
+            surfaceView.requestFocus()
+            surfaceView.post { runCatching { surfaceView.requestPointerCapture() } }
+        }
     }
 
     override fun onPause() {
@@ -200,6 +314,8 @@ class CinemaActivity : Activity(), LifecycleOwner {
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         cameraProvider?.unbindAll()
         hands?.releaseAll()
+        pointer?.hide()
+        runCatching { surfaceView.releasePointerCapture() }
         surfaceView.onPause()
         tracker.stop()
         setJoyConPassthrough(this, false)
@@ -212,6 +328,7 @@ class CinemaActivity : Activity(), LifecycleOwner {
         trackingExecutor.execute { handTracker?.close() }
         trackingExecutor.shutdown()
         running = false
+        controller.close()
         runCatching { service?.releaseDisplay() }
         connection?.let { VirtualScreen.unbind(this, it) }
         super.onDestroy()
@@ -250,6 +367,11 @@ class CinemaActivity : Activity(), LifecycleOwner {
     // ------------------------------------------------------------------ Input to the game
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // A real keyboard on the desk: typing opens the window onto it.
+        val device = event.device
+        if (device != null && !device.isVirtual && device.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+            lastKeyAt = android.os.SystemClock.elapsedRealtime()
+        }
         val gamepad = event.isFromSource(InputDevice.SOURCE_GAMEPAD) || event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             event.isFromSource(InputDevice.SOURCE_DPAD) && event.keyCode != KeyEvent.KEYCODE_BACK
         if (!gamepad && event.keyCode == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
@@ -269,7 +391,14 @@ class CinemaActivity : Activity(), LifecycleOwner {
             runCatching { shell.injectMotion(event, id) }
             return true
         }
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return onLooseMouse(event)
         return super.dispatchGenericMotionEvent(event)
+    }
+
+    /** A mouse click must not count as a tap on the phone, which recentres the view. */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return onLooseMouse(event)
+        return super.dispatchTouchEvent(event)
     }
 
     /** Types "/connect localhost:19144" into Minecraft's chat on the virtual screen, then Enter. */
@@ -300,6 +429,10 @@ class CinemaActivity : Activity(), LifecycleOwner {
 
     companion object {
         private const val TAG = "PhoneXR-Cinema"
+        /** The desk window stays this long after the last key press. */
+        private const val KEYBOARD_WINDOW_MS = 4_000L
+        /** Enough to read keys, small enough to upload every frame. */
+        private const val WINDOW_TEXTURE_W = 384
         const val EXTRA_PACKAGE = "package"
         const val EXTRA_SCENE = "scene"
         const val SCENE_ROOM = "room"

@@ -71,6 +71,21 @@ object Persona {
         return build(context, source)
     }
 
+    /** Saves every measured angle from the guided scan, then builds the animated front Persona. */
+    fun buildScan(context: Context, views: Map<String, Bitmap>): String? {
+        val front = views["front"] ?: return "Фронтальный ракурс не отсканирован"
+        val folder = File(context.filesDir, DIR).apply { mkdirs() }
+        views.forEach { (name, bitmap) ->
+            File(folder, "scan_$name.webp").outputStream().use {
+                @Suppress("DEPRECATION")
+                bitmap.compress(Bitmap.CompressFormat.WEBP, 88, it)
+            }
+        }
+        val result = build(context, front.copy(Bitmap.Config.ARGB_8888, false))
+        views.values.forEach { if (!it.isRecycled) it.recycle() }
+        return result
+    }
+
     /**
      * Makes the Persona from a picture (gallery or the front camera): the person is cut out of the
      * background by a segmentation network, so it floats on its own like in visionOS.

@@ -5,6 +5,7 @@ import android.content.ContextWrapper
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.InputEvent
 import android.view.KeyEvent
@@ -72,6 +73,20 @@ class DisplayUserService(context: Context) : IDisplayService.Stub() {
     override fun injectKey(event: KeyEvent, displayId: Int) = inject(event, displayId)
 
     override fun injectMotion(event: MotionEvent, displayId: Int) = inject(event, displayId)
+
+    override fun installApk(apk: ParcelFileDescriptor, size: Long): String? = try {
+        val process = ProcessBuilder("pm", "install", "-r", "-S", size.toString())
+            .redirectErrorStream(true).start()
+        ParcelFileDescriptor.AutoCloseInputStream(apk).use { input ->
+            process.outputStream.use { output -> input.copyTo(output) }
+        }
+        val message = process.inputStream.bufferedReader().readText().trim()
+        val code = process.waitFor()
+        if (code == 0 && message.contains("Success", ignoreCase = true)) null
+        else message.ifBlank { "Android не установил игру (код $code)" }
+    } catch (error: Throwable) {
+        error.message ?: error.javaClass.simpleName
+    }
 
     private fun inject(event: InputEvent, displayId: Int) {
         try {

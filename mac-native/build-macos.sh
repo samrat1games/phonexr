@@ -3,44 +3,29 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 OUTPUT_DIR="$SCRIPT_DIR/build"
-export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
-APP_DIR="$OUTPUT_DIR/XR Bridge.app"
-STAGE_DIR="$OUTPUT_DIR/dmg-stage"
-DMG_PATH="$OUTPUT_DIR/XR Bridge-5.1.dmg"
-RUNTIME_APK="$SCRIPT_DIR/../openxr-runtime/monado/src/xrt/targets/openxr_android/build/outputs/apk/outOfProcess/debug/openxr_android-outOfProcess-debug.apk"
+FULL_APK="$SCRIPT_DIR/../app/build/outputs/apk/full/debug/app-full-debug.apk"
+LITE_APK="$SCRIPT_DIR/../app/build/outputs/apk/lite/debug/app-lite-debug.apk"
 
-if [[ ! -f "$RUNTIME_APK" ]]; then
-  echo "OpenXR Runtime APK не найден: $RUNTIME_APK" >&2
-  exit 1
-fi
+build_edition() {
+  local name="$1" flag="$2" plist="$3" apk="$4"
+  local app="$OUTPUT_DIR/$name.app" stage="$OUTPUT_DIR/$name-dmg" dmg="$OUTPUT_DIR/$name.dmg"
+  /bin/rm -rf "$app" "$stage"
+  /bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage"
+  /usr/bin/xcrun swiftc -parse-as-library -O -module-cache-path "$OUTPUT_DIR/module-cache" \
+    -target arm64-apple-macos13.0 -framework SwiftUI -framework AppKit ${(z)flag} \
+    "$SCRIPT_DIR/PhoneXRShareApp.swift" "$SCRIPT_DIR/AndroidBridge.swift" "$SCRIPT_DIR/ScreenStream.swift" \
+    -o "$app/Contents/MacOS/$name"
+  /bin/cp "$plist" "$app/Contents/Info.plist"
+  /bin/cp "$SCRIPT_DIR/../desktop/assets/phonexr-share-icon.png" "$app/Contents/Resources/PhoneXRShare.png"
+  /bin/cp "$apk" "$app/Contents/Resources/PhoneXR.apk"
+  /usr/bin/codesign --force --deep --sign - "$app"
+  /usr/bin/ditto "$app" "$stage/$name.app"
+  /bin/ln -s /Applications "$stage/Applications"
+  /bin/rm -f "$dmg"
+  /usr/bin/hdiutil create -volname "$name" -srcfolder "$stage" -ov -format UDZO "$dmg"
+  echo "$dmg"
+}
 
-/bin/rm -rf "$APP_DIR"
-/bin/mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-
-/usr/bin/xcrun swiftc \
-  -parse-as-library \
-  -O \
-  -module-cache-path "$OUTPUT_DIR/module-cache" \
-  -target arm64-apple-macos13.0 \
-  -framework SwiftUI \
-  -framework AppKit \
-  "$SCRIPT_DIR/XRBridgeApp.swift" \
-  "$SCRIPT_DIR/AndroidBridge.swift" \
-  "$SCRIPT_DIR/IOSBridge.swift" \
-  "$SCRIPT_DIR/PXRBridge.swift" \
-  "$SCRIPT_DIR/UnityBridge.swift" \
-  -o "$APP_DIR/Contents/MacOS/XRBridge"
-
-/bin/cp "$SCRIPT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
-/bin/cp "$SCRIPT_DIR/../app/build/outputs/apk/debug/app-debug.apk" "$APP_DIR/Contents/Resources/cardboard-hands.apk"
-/bin/cp "$RUNTIME_APK" "$APP_DIR/Contents/Resources/monado-openxr-runtime.apk"
-/bin/cp "$SCRIPT_DIR/../PhoneXR-iOS/PhoneXR-iOS-LiveContainer.ipa" "$APP_DIR/Contents/Resources/PhoneXR-iOS.ipa"
-/usr/bin/codesign --force --deep --sign - "$APP_DIR"
-/bin/rm -rf "$STAGE_DIR"
-/bin/mkdir -p "$STAGE_DIR"
-/usr/bin/ditto "$APP_DIR" "$STAGE_DIR/XR Bridge.app"
-/bin/ln -s /Applications "$STAGE_DIR/Applications"
-/bin/rm -f "$DMG_PATH"
-/usr/bin/hdiutil create -volname "XR Bridge" -srcfolder "$STAGE_DIR" -ov -format UDZO "$DMG_PATH"
-
-echo "$DMG_PATH"
+/bin/mkdir -p "$OUTPUT_DIR/module-cache"
+build_edition "PhoneXR Share" "" "$SCRIPT_DIR/Info.plist" "$FULL_APK"
+build_edition "PhoneXR Lite Share" "-D PHONEXR_LITE" "$SCRIPT_DIR/Info-Lite.plist" "$LITE_APK"

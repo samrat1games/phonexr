@@ -53,6 +53,37 @@ object JoyConButtons {
         clear()
     }
 
+    /**
+     * Any controller PhoneXR can play VR with: a Joy-Con, a DualShock, an Xbox pad or a no-name one
+     * from a marketplace. They all speak the same gamepad language to Android, so they are all let
+     * in; what differs is which hand a button belongs to.
+     */
+    fun isController(device: InputDevice?): Boolean {
+        device ?: return false
+        if (isJoyCon(device)) return true
+        if (device.isVirtual) return false
+        val sources = device.sources
+        val gamepad = sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD
+        val joystick = sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
+        return gamepad || joystick
+    }
+
+    /**
+     * Which hand a button belongs to. A Joy-Con is already one hand's worth; a single gamepad plays
+     * both, so its left side (X, Y, L, ZL, left stick) is the left hand and its right side the right.
+     */
+    fun handOf(device: InputDevice, keyCode: Int): Boolean {
+        if (isJoyCon(device)) return isLeft(device)
+        return when (keyCode) {
+            KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
+            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_L2,
+            KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_SELECT,
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> true
+            else -> false
+        }
+    }
+
     fun isJoyCon(device: InputDevice?): Boolean {
         device ?: return false
         val name = device.name.lowercase()
@@ -65,16 +96,22 @@ object JoyConButtons {
         return device.productId == 0x2006 || name.contains("left") || name.contains("(l)")
     }
 
+    /** A Joy-Con of that side, or any other controller — one pad stands for both hands. */
     fun connected(left: Boolean): Boolean = InputDevice.getDeviceIds().any { id ->
-        val device = InputDevice.getDevice(id)
-        isJoyCon(device) && isLeft(device!!) == left
+        val device = InputDevice.getDevice(id) ?: return@any false
+        if (isJoyCon(device)) isLeft(device) == left else isController(device)
     }
 
-    /** Returns true when the event came from a Joy-Con, so the game never sees it. */
+    /** Names of the controllers plugged in or paired, for the settings screen. */
+    fun names(): List<String> = InputDevice.getDeviceIds().toList().mapNotNull { id ->
+        InputDevice.getDevice(id)?.takeIf { isController(it) }?.name
+    }.distinct()
+
+    /** Returns true when the event came from a controller, so the game never sees it. */
     fun onKey(event: KeyEvent): Boolean {
         val device = InputDevice.getDevice(event.deviceId)
-        if (!isJoyCon(device)) return false
-        val left = isLeft(device!!)
+        if (!isController(device)) return false
+        val left = handOf(device!!, event.keyCode)
         val slot = if (left) 0 else 1
         val rawBit = Settings.KNOWN_KEYS.indexOf(event.keyCode).takeIf { it >= 0 }?.let { 1 shl it } ?: 0
         if (rawBit != 0) {
@@ -101,10 +138,14 @@ object JoyConButtons {
         return true
     }
 
-    /** Joy-Con sticks arrive as joystick axes; a single Joy-Con is held sideways, so axes are swapped. */
+    /**
+     * Sticks arrive as joystick axes. A gamepad holds both of them at once; a single Joy-Con is held
+     * sideways, so its axes are swapped and turned.
+     */
     fun onMotion(event: MotionEvent): Boolean {
         val device = InputDevice.getDevice(event.deviceId)
-        if (!isJoyCon(device)) return false
+        if (!isController(device)) return false
+        if (!isJoyCon(device)) return onGamepadMotion(event)
         val left = isLeft(device!!)
         val rawX: Float
         val rawY: Float
@@ -121,6 +162,30 @@ object JoyConButtons {
         slot[0] = deadzone(-rawY * turn)
         slot[1] = deadzone(rawX * turn)
         return true
+    }
+
+    /**
+     * One gamepad for both hands: the left stick is the left hand, the right stick the right one.
+     * Many pads (DualShock above all) only report their triggers as axes, so those become presses.
+     */
+    private fun onGamepadMotion(event: MotionEvent): Boolean {
+        sticks[0][0] = deadzone(event.getAxisValue(MotionEvent.AXIS_X))
+        sticks[0][1] = deadzone(-event.getAxisValue(MotionEvent.AXIS_Y))
+        sticks[1][0] = deadzone(event.getAxisValue(MotionEvent.AXIS_Z))
+        sticks[1][1] = deadzone(-event.getAxisValue(MotionEvent.AXIS_RZ))
+        trigger(0, event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE))
+        trigger(1, event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS))
+        return true
+    }
+
+    /** An analogue trigger counts as pressed once it is past half way. */
+    private fun trigger(slot: Int, primary: Float, secondary: Float) {
+        val pulled = maxOf(primary, secondary) > .5f
+        while (true) {
+            val current = masks.get(slot)
+            val next = if (pulled) current or TRIGGER else current and TRIGGER.inv()
+            if (masks.compareAndSet(slot, current, next)) break
+        }
     }
 
     private fun deadzone(value: Float): Float {

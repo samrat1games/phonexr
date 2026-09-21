@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion><UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName Condition="'$(PhoneXRLite)' != 'true'">PhoneXR Share</AssemblyName>
+    <AssemblyName Condition="'$(PhoneXRLite)' == 'true'">PhoneXR Lite Share</AssemblyName>
+    <DefineConstants Condition="'$(PhoneXRLite)' == 'true'">$(DefineConstants);PHONEXR_LITE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup><PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250401001" /><PackageReference Include="System.Drawing.Common" Version="9.0.4" /><Content Include="PhoneXRShare.png" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <Target Name="BuildPhoneXRSteamVR" BeforeTargets="Build">
+    <Exec Command="cmake -S &quot;$(MSBuildProjectDirectory)\..\..\steamvr&quot; -B &quot;$(MSBuildProjectDirectory)\..\..\steamvr\build-win&quot; -A x64 -DCMAKE_BUILD_TYPE=Release" />
+    <Exec Command="cmake --build &quot;$(MSBuildProjectDirectory)\..\..\steamvr\build-win&quot; --config Release" />
+  </Target>
+  <Target Name="CopyPhoneXRSteamVR" AfterTargets="Build">
+    <Exec Command="xcopy /E /I /Y &quot;$(MSBuildProjectDirectory)\..\..\steamvr\build-win\phonexr&quot; &quot;$(OutDir)steamvr\phonexr&quot;" />
+  </Target>
+</Project>

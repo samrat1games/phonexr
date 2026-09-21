@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeOS</title><style>
+*{box-sizing:border-box}body{margin:0;color:#fff;font:18px system-ui;background:linear-gradient(135deg,#172746,#4f3476);height:100vh;overflow:hidden}
+#desk{height:calc(100vh - 86px);padding:34px}.title{font-size:34px;font-weight:700}.grid{display:grid;grid-template-columns:repeat(5,130px);gap:24px;margin-top:36px}
+.app{height:112px;border:0;border-radius:24px;color:white;font:600 17px system-ui;background:#ffffff24;backdrop-filter:blur(20px)}
+#bar{height:86px;margin:0 22px 18px;border-radius:30px;background:#202126e8;display:flex;align-items:center;padding:12px 22px;gap:14px}
+#bar button{width:58px;height:58px;border:0;border-radius:17px;background:#ffffff22;color:#fff;font-size:25px}.space{flex:1}#clock{font-weight:700}
+.window{display:none;position:absolute;inset:80px 120px 120px;background:#20252eef;border-radius:30px;padding:30px;box-shadow:0 30px 90px #0008}
+.window.show{display:block}.row{padding:22px;border-bottom:1px solid #ffffff22}.close{float:right;background:#ff453a;color:white;border:0;border-radius:20px;padding:10px 20px}
+</style><body><div id="desk"><div class="title">LeOS</div><div class="grid">
+<button class="app" onclick="openw('settings')">⚙️<br>Настройки</button><button class="app" onclick="openw('store')">🛍️<br>Магазин PWA</button>
+<button class="app" onclick="location.href='https://www.google.com'">🌐<br>Браузер</button><button class="app" onclick="location.href='https://docs.google.com'">📄<br>Документы</button>
+<button class="app" onclick="location.href='https://www.youtube.com'">▶️<br>YouTube</button></div></div>
+<div id="bar"><span id="clock"></span><span>⌁ Wi‑Fi</span><div class="space"></div><button onclick="openw('store')">▦</button><button onclick="openw('settings')">⚙</button></div>
+<section id="settings" class="window"><button class="close" onclick="closew()">Закрыть</button><h1>Настройки LeOS</h1><div class="row">Wi‑Fi · управляется Android/PhoneXR</div><div class="row">Bluetooth · управляется Android/PhoneXR</div><div class="row">Обои <input type="color" oninput="document.body.style.background=this.value"></div><div class="row">Стиль · тёмный</div></section>
+<section id="store" class="window"><button class="close" onclick="closew()">Закрыть</button><h1>Магазин PWA</h1><p>Приложения устанавливаются из магазина PhoneXR и появляются в библиотеке VR.</p><div class="grid"><button class="app" onclick="location.href='https://music.youtube.com'">Музыка</button><button class="app" onclick="location.href='https://maps.google.com'">Карты</button><button class="app" onclick="location.href='https://calendar.google.com'">Календарь</button></div></section>
+<script>function openw(id){closew();document.getElementById(id).classList.add('show')}function closew(){document.querySelectorAll('.window').forEach(x=>x.classList.remove('show'))}setInterval(()=>clock.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),1000)</script>
+</body></html>

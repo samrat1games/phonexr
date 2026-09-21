@@ -29,6 +29,16 @@ class CinemaRenderer(
 
     /** Up to two cursors, one per hand; written by the hand thread. */
     @Volatile var cursors: List<Cursor> = emptyList()
+    /** The cursor of a mouse or of a second phone held as a pointer, when one is aiming. */
+    @Volatile var pointer: Cursor? = null
+    /**
+     * A window into the real world under the screen, for a keyboard on the desk: while it is on, the
+     * camera picture of what is below is shown there, so the keys and the hands can be seen without
+     * taking the phone out of the headset.
+     */
+    @Volatile var keyboardWindow = false
+    private var keyboardFade = 0f
+    private var windowProgram = 0
     /** The user's real hands (camera picture cut to the hand shape) in head space, over everything. */
     @Volatile var ghosts: List<FloatArray> = emptyList()
     private var handFrame: android.graphics.Bitmap? = null
@@ -49,12 +59,31 @@ class CinemaRenderer(
     /** The app's virtual screen size; set before the GL surface is created. */
     var screenW = SCREEN_PIXELS_W
     var screenH = SCREEN_PIXELS_H
+    /**
+     * A wide screen bent around the viewer: every point of it stays the same distance from the eyes,
+     * so the far edges of a 32:9 picture are as readable as its middle. Set before the surface is
+     * created, together with the size above.
+     */
+    var curved = false
+    /** Where the eyes are and how their pictures sit under the lenses; set before the surface. */
+    @Volatile var eyes: Eyes = Eyes.DEFAULT
     /** Hands for the full view: triangles (x, y, z) in the eye's own coordinates (-1..1). */
     @Volatile var viewHands: List<FloatArray> = emptyList()
     private var flatProgram = 0
-    /** Where the screen is, for hit tests from the hand thread (centre y, z, width). */
-    val screenPlacement: FloatArray get() = if (model != null) floatArrayOf(model.screenCenterY, model.screenZ, model.screenWidth, model.eyeHeight)
-        else floatArrayOf(SCREEN_CENTER_Y, SCREEN_Z, SCREEN_WIDTH, EYE_HEIGHT)
+    /**
+     * Where the screen is, for hit tests from the hand and pointer threads:
+     * centre y, z, width, eye height, bend radius (0 when flat) and height — all in metres.
+     * A wider picture keeps the height of a 16:9 screen and grows sideways.
+     */
+    val screenPlacement: FloatArray get() {
+        val centerY = model?.screenCenterY ?: SCREEN_CENTER_Y
+        val z = model?.screenZ ?: SCREEN_Z
+        val base = model?.screenWidth ?: SCREEN_WIDTH
+        val eye = model?.eyeHeight ?: EYE_HEIGHT
+        val height = base * SCREEN_PIXELS_H / SCREEN_PIXELS_W
+        val width = height * screenW / screenH
+        return floatArrayOf(centerY, z, width, eye, if (curved) -z else 0f, height)
+    }
 
     @Volatile var scene = Scene.ROOM
         set(value) { field = value; sceneDirty.set(true) }
@@ -86,6 +115,7 @@ class CinemaRenderer(
         cursorProgram = program(SCREEN_VERTEX, CURSOR_FRAGMENT)
         ghostProgram = program(SCREEN_VERTEX, HAND_FRAGMENT)
         flatProgram = program(GHOST_VERTEX, FLAT_FRAGMENT)
+        windowProgram = program(SCREEN_VERTEX, WINDOW_FRAGMENT)
         handTexture = IntArray(1).also { GLES20.glGenTextures(1, it, 0) }[0]
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, handTexture)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
@@ -139,16 +169,19 @@ class CinemaRenderer(
         Matrix.translateM(worldToHead, 0, 0f, -place[3], 0f)
 
         val eyeWidth = width / 2
-        Matrix.perspectiveM(projection, 0, FOV_Y, eyeWidth.toFloat() / height, .05f, 200f)
         for (index in 0..1) {
+            Matrix.perspectiveM(projection, 0, FOV_Y, eyeWidth.toFloat() / height, .05f, 200f)
+            eyes.shift(projection, index, eyeWidth)
             GLES20.glViewport(index * eyeWidth, 0, eyeWidth, height)
             Matrix.setIdentityM(eye, 0)
-            Matrix.translateM(eye, 0, if (index == 0) IPD / 2 else -IPD / 2, 0f, 0f)
+            Matrix.translateM(eye, 0, if (index == 0) eyes.halfIpd else -eyes.halfIpd, 0f, 0f)
             Matrix.multiplyMM(view, 0, eye, 0, worldToHead, 0)
             Matrix.multiplyMM(viewProjection, 0, projection, 0, view, 0)
             if (model != null) model.draw(viewProjection) else sceneMesh?.draw(colorProgram, viewProjection)
-            drawScreen(viewProjection, place[2], place[0], place[1])
-            drawCursors(viewProjection, place[2], place[0], place[1])
+            drawScreen(viewProjection, place)
+            drawCursors(viewProjection, place)
+            if (index == 0) uploadCameraFrame()
+            drawKeyboardWindow()
         }
     }
 
@@ -166,13 +199,19 @@ class CinemaRenderer(
         for (index in 0..1) {
             GLES20.glViewport(index * eyeWidth, 0, eyeWidth, height)
             GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+            // The lens offset moves the whole picture, so the two halves meet under the lenses.
+            val lens = if (eyes.offsetPixels == 0f) 0f else
+                (if (index == 0) 1f else -1f) * 2f * eyes.offsetPixels / eyeWidth
             // The app's screen is exactly the eye's size: it fills the view, nothing cut off.
             GLES20.glUseProgram(screenProgram)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, screenTexture)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(screenProgram, "uTexture"), 0)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(screenProgram, "uMvp"), 1, false, identity, 0)
-            val quad = floatBuffer(floatArrayOf(-1f, -1f, 0f, 0f, 1f, 1f, -1f, 0f, 1f, 1f, -1f, 1f, 0f, 0f, 0f, 1f, 1f, 0f, 1f, 0f))
+            val quad = floatBuffer(floatArrayOf(
+                -1f + lens, -1f, 0f, 0f, 1f, 1f + lens, -1f, 0f, 1f, 1f,
+                -1f + lens, 1f, 0f, 0f, 0f, 1f + lens, 1f, 0f, 1f, 0f
+            ))
             val position = GLES20.glGetAttribLocation(screenProgram, "aPosition")
             val uv = GLES20.glGetAttribLocation(screenProgram, "aUv")
             quad.position(0)
@@ -205,7 +244,7 @@ class CinemaRenderer(
                 GLES20.glEnable(GLES20.GL_CULL_FACE)
             }
             // Cursors: a ring on each hand's point, filled while tapping.
-            val list = cursors
+            val list = cursors + listOfNotNull(pointer)
             if (list.isNotEmpty()) {
                 GLES20.glEnable(GLES20.GL_BLEND)
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -228,56 +267,107 @@ class CinemaRenderer(
                 }
             }
             GLES20.glDisable(GLES20.GL_BLEND)
+            if (index == 0) uploadCameraFrame()
+            Matrix.setIdentityM(eye, 0)
+            Matrix.setIdentityM(projection, 0)
+            drawKeyboardWindow()
         }
     }
 
-    private fun drawScreen(mvp: FloatArray, screenWidth: Float, cy: Float, z: Float) {
+    private fun drawScreen(mvp: FloatArray, place: FloatArray) {
         GLES20.glUseProgram(screenProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, screenTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(screenProgram, "uTexture"), 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(screenProgram, "uMvp"), 1, false, mvp, 0)
-        val halfW = screenWidth / 2
-        val halfH = screenWidth * screenH / screenW / 2
-        // x, y, z, u, v; a virtual display's picture has t = 0 at the top.
-        val quad = floatArrayOf(
-            -halfW, cy - halfH, z, 0f, 1f,
-            halfW, cy - halfH, z, 1f, 1f,
-            -halfW, cy + halfH, z, 0f, 0f,
-            halfW, cy + halfH, z, 1f, 0f,
-        )
-        val buffer = floatBuffer(quad)
+        val mesh = screenMesh(place)
         val position = GLES20.glGetAttribLocation(screenProgram, "aPosition")
         val uv = GLES20.glGetAttribLocation(screenProgram, "aUv")
-        buffer.position(0)
-        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 20, buffer)
+        mesh.position(0)
+        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 20, mesh)
         GLES20.glEnableVertexAttribArray(position)
-        buffer.position(3)
-        GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 20, buffer)
+        mesh.position(3)
+        GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 20, mesh)
         GLES20.glEnableVertexAttribArray(uv)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, mesh.capacity() / 5)
+    }
+
+    private var screenStrip: FloatBuffer? = null
+    private var screenStripFor = FloatArray(0)
+
+    /**
+     * The screen as a triangle strip: two triangles when it is flat, a ring of columns when it is
+     * bent. The strip is kept until the screen changes, since it is the same every frame.
+     */
+    private fun screenMesh(place: FloatArray): FloatBuffer {
+        screenStrip?.let { if (place.contentEquals(screenStripFor)) return it }
+        val width = place[2]
+        val halfH = place[5] / 2
+        val cy = place[0]
+        val radius = place[4]
+        val vertices = if (radius <= 0f) {
+            // x, y, z, u, v; a virtual display's picture has t = 0 at the top.
+            floatArrayOf(
+                -width / 2, cy - halfH, place[1], 0f, 1f,
+                width / 2, cy - halfH, place[1], 1f, 1f,
+                -width / 2, cy + halfH, place[1], 0f, 0f,
+                width / 2, cy + halfH, place[1], 1f, 0f,
+            )
+        } else {
+            // The picture is wrapped on a cylinder around the viewer: its arc is as long as the
+            // screen is wide, so nothing is stretched and the edges come no closer.
+            val arc = width / radius
+            val columns = SCREEN_COLUMNS
+            FloatArray((columns + 1) * 2 * 5).also { out ->
+                for (column in 0..columns) {
+                    val u = column.toFloat() / columns
+                    val angle = (u - .5f) * arc
+                    val x = radius * kotlin.math.sin(angle)
+                    val z = -radius * kotlin.math.cos(angle)
+                    val base = column * 10
+                    out[base] = x; out[base + 1] = cy - halfH; out[base + 2] = z; out[base + 3] = u; out[base + 4] = 1f
+                    out[base + 5] = x; out[base + 6] = cy + halfH; out[base + 7] = z; out[base + 8] = u; out[base + 9] = 0f
+                }
+            }
+        }
+        val buffer = floatBuffer(vertices)
+        screenStrip = buffer
+        screenStripFor = place.copyOf()
+        return buffer
+    }
+
+    /** Where a point of the screen (u, v) sits in the world, flat or bent. */
+    private fun screenPoint(place: FloatArray, u: Float, v: Float, towardsViewer: Float = 0f): FloatArray {
+        val halfH = place[5] / 2
+        val y = place[0] + halfH - v * place[5]
+        val radius = place[4]
+        if (radius <= 0f) return floatArrayOf((u - .5f) * place[2], y, place[1] + towardsViewer)
+        val angle = (u - .5f) * (place[2] / radius)
+        val r = radius - towardsViewer
+        return floatArrayOf(r * kotlin.math.sin(angle), y, -r * kotlin.math.cos(angle))
     }
 
     /** Hand cursors: soft rings just in front of the screen, filled while touching. */
-    private fun drawCursors(mvp: FloatArray, screenWidth: Float, cy: Float, z: Float) {
-        val list = cursors
+    private fun drawCursors(mvp: FloatArray, place: FloatArray) {
+        val list = cursors + listOfNotNull(pointer)
         if (list.isEmpty()) return
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(cursorProgram)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(cursorProgram, "uMvp"), 1, false, mvp, 0)
-        val halfW = screenWidth / 2
-        val halfH = screenWidth * screenH / screenW / 2
-        val r = screenWidth * .018f
+        val r = place[5] * .032f
         for (cursor in list) {
-            val x = -halfW + cursor.u * screenWidth
-            val y = cy + halfH - cursor.v * halfH * 2
+            // A hair in front of the screen, bent along with it.
+            val point = screenPoint(place, cursor.u, cursor.v, towardsViewer = .01f)
+            val x = point[0]
+            val y = point[1]
+            val z = point[2]
             GLES20.glUniform1f(GLES20.glGetUniformLocation(cursorProgram, "uPressed"), if (cursor.pressed) 1f else 0f)
             val quad = floatArrayOf(
-                x - r, y - r, z + .01f, 0f, 1f,
-                x + r, y - r, z + .01f, 1f, 1f,
-                x - r, y + r, z + .01f, 0f, 0f,
-                x + r, y + r, z + .01f, 1f, 0f,
+                x - r, y - r, z, 0f, 1f,
+                x + r, y - r, z, 1f, 1f,
+                x - r, y + r, z, 0f, 0f,
+                x + r, y + r, z, 1f, 0f,
             )
             val buffer = floatBuffer(quad)
             val position = GLES20.glGetAttribLocation(cursorProgram, "aPosition")
@@ -293,8 +383,8 @@ class CinemaRenderer(
         GLES20.glDisable(GLES20.GL_BLEND)
     }
 
-    /** Real hands in head space, cut out of the newest camera picture. */
-    private fun drawGhosts() {
+    /** Puts the newest camera picture on the GPU; both the hands and the keyboard window use it. */
+    private fun uploadCameraFrame() {
         synchronized(handFrameLock) {
             handFrame?.let { bitmap ->
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, handTexture)
@@ -304,6 +394,57 @@ class CinemaRenderer(
                 hasHandTexture = true
             }
         }
+    }
+
+    /**
+     * The window onto the desk, in head space under the line of sight. Its texture coordinates come
+     * from the same camera mapping the hands use, so what is drawn there really is what lies below.
+     */
+    private fun drawKeyboardWindow() {
+        keyboardFade = (keyboardFade + if (keyboardWindow) FADE_STEP else -FADE_STEP).coerceIn(0f, 1f)
+        if (keyboardFade <= 0f || !hasHandTexture) return
+        val mvp = FloatArray(16)
+        Matrix.multiplyMM(mvp, 0, projection, 0, eye, 0)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glUseProgram(windowProgram)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, handTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(windowProgram, "uTexture"), 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(windowProgram, "uAlpha"), keyboardFade)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(windowProgram, "uMvp"), 1, false, mvp, 0)
+        // Where the window hangs: a hand's length away, below the line of sight, where a desk is.
+        val z = -WINDOW_DISTANCE
+        val left = -WINDOW_HALF_W
+        val right = WINDOW_HALF_W
+        val bottom = WINDOW_BOTTOM
+        val top = WINDOW_TOP
+        fun u(x: Float) = (x / WINDOW_DISTANCE) / (2f * CAMERA_TAN_X) + .5f
+        fun v(y: Float) = .5f - (y / WINDOW_DISTANCE) / (2f * CAMERA_TAN_Y)
+        val quad = floatArrayOf(
+            left, bottom, z, u(left), v(bottom),
+            right, bottom, z, u(right), v(bottom),
+            left, top, z, u(left), v(top),
+            right, top, z, u(right), v(top),
+        )
+        val buffer = floatBuffer(quad)
+        val position = GLES20.glGetAttribLocation(windowProgram, "aPosition")
+        val uv = GLES20.glGetAttribLocation(windowProgram, "aUv")
+        buffer.position(0)
+        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 20, buffer)
+        GLES20.glEnableVertexAttribArray(position)
+        buffer.position(3)
+        GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 20, buffer)
+        GLES20.glEnableVertexAttribArray(uv)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    /** Real hands in head space, cut out of the newest camera picture. */
+    private fun drawGhosts() {
+        uploadCameraFrame()
         val list = ghosts
         if (list.isEmpty() || !hasHandTexture) return
         val mvp = FloatArray(16)
@@ -356,8 +497,11 @@ class CinemaRenderer(
         box(-3.94f, 1.7f, -1f, .04f, 1.1f, .05f, floatArrayOf(.28f, .20f, .13f))
         // TV stand and the screen bezel.
         box(0f, .3f, SCREEN_Z - .25f, 2.6f, .6f, .5f, floatArrayOf(.30f, .20f, .13f))
-        val halfH = SCREEN_WIDTH * SCREEN_PIXELS_H / SCREEN_PIXELS_W / 2
-        box(0f, SCREEN_CENTER_Y, SCREEN_Z - .04f, SCREEN_WIDTH + .12f, halfH * 2 + .12f, .06f, floatArrayOf(.04f, .04f, .05f))
+        // A bent screen has no straight bezel to sit in, so the frame is only drawn around a flat one.
+        if (!curved) {
+            val place = screenPlacement
+            box(0f, SCREEN_CENTER_Y, SCREEN_Z - .04f, place[2] + .12f, place[5] + .12f, .06f, floatArrayOf(.04f, .04f, .05f))
+        }
         // Shelf with block-like decorations on the right wall.
         box(3.8f, 1.6f, -1.5f, .4f, .06f, 2f, floatArrayOf(.35f, .24f, .15f))
         box(3.8f, 1.8f, -2.2f, .3f, .3f, .3f, floatArrayOf(.36f, .62f, .25f))
@@ -388,9 +532,11 @@ class CinemaRenderer(
             floatArrayOf(10f, -14f, -8f, 11f), floatArrayOf(-18f, -12f, 20f, 13f),
         )
         for (c in clouds) box(c[0], c[1], c[2], c[3], 1.2f, c[3] * .6f, floatArrayOf(.97f, .97f, 1f))
-        // A thin frame so the floating screen reads as a panel.
-        val halfH = SCREEN_WIDTH * SCREEN_PIXELS_H / SCREEN_PIXELS_W / 2
-        box(0f, SCREEN_CENTER_Y, SCREEN_Z - .04f, SCREEN_WIDTH + .08f, halfH * 2 + .08f, .04f, floatArrayOf(.1f, .1f, .12f))
+        // A thin frame so the floating screen reads as a panel; a bent one needs none.
+        if (!curved) {
+            val place = screenPlacement
+            box(0f, SCREEN_CENTER_Y, SCREEN_Z - .04f, place[2] + .08f, place[5] + .08f, .04f, floatArrayOf(.1f, .1f, .12f))
+        }
     }.build()
 
     // ------------------------------------------------------------------ GL helpers
@@ -468,7 +614,17 @@ class CinemaRenderer(
         private const val SCREEN_CENTER_Y = 1.45f
         private const val SCREEN_Z = -3.9f
         private const val EYE_HEIGHT = 1.15f
-        private const val IPD = .064f
+        /** Columns of the bent screen: enough that its curve reads as smooth, few enough to be free. */
+        private const val SCREEN_COLUMNS = 48
+        /** The keyboard window: where it hangs in front of the eyes and how the camera sees it. */
+        private const val WINDOW_DISTANCE = 1.2f
+        private const val WINDOW_HALF_W = .5f
+        private const val WINDOW_BOTTOM = -.78f
+        private const val WINDOW_TOP = -.30f
+        private const val CAMERA_TAN_X = .95f
+        private const val CAMERA_TAN_Y = .72f
+        /** How fast the window appears and goes, in parts of a frame. */
+        private const val FADE_STEP = .06f
         private const val FOV_Y = 90f
 
         private fun floatBuffer(values: FloatArray): FloatBuffer =
@@ -533,6 +689,16 @@ class CinemaRenderer(
                 float fill = uPressed * smoothstep(0.62, 0.5, d);
                 float alpha = max(ring * 0.95, fill * 0.9);
                 gl_FragColor = vec4(1.0, 1.0, 1.0, alpha);
+            }"""
+        private const val WINDOW_FRAGMENT = """
+            precision mediump float;
+            uniform sampler2D uTexture;
+            uniform float uAlpha;
+            varying vec2 vUv;
+            void main() {
+                vec2 d = abs(vUv - vec2(0.5)) * 2.0;
+                float edge = smoothstep(1.0, 0.86, max(d.x, d.y));
+                gl_FragColor = vec4(texture2D(uTexture, vUv).rgb, uAlpha * edge);
             }"""
         private const val SCREEN_FRAGMENT = """
             #extension GL_OES_EGL_image_external : require

@@ -19,6 +19,11 @@
 Без блока <queries> Android, начиная с targetSdk 30, скрывает брокер, игра не находит
 рантайм и показывает чёрный экран.
 
+Чужой сборке (например, из Quest) всё это дописывает сам PhoneXR при патче игры:
+разрешения OPENXR и OPENXR_SYSTEM, блок <queries> с брокером, INTERNET для потока
+трекинга и категорию IMMERSIVE_HMD на экране запуска. Своей игре пропишите их сразу —
+патчить её тогда не придётся.
+
 Главная активность должна быть видна как VR-приложение:
 
   <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
@@ -32,3 +37,10 @@
 Управление: PhoneXR выдаёт себя за контроллеры Oculus Touch, так что используйте
 профиль /interaction_profiles/oculus/touch_controller. Стика нет: его значения всегда
 нулевые, кроме жеста «оба кулака». Сырые данные рук — см. docs/protocol.txt.
+
+Свой трекинг рук: если игра сама отслеживает руки камерой, объявите это в <application>,
+и PhoneXR при запуске игры не включит свой трекинг, а отдаст ей камеру:
+
+  <meta-data android:name="com.phonexr.OWN_HAND_TRACKING" android:value="true" />
+
+Руки в OpenXR (контроллеры Touch) тогда не приходят — игра берёт их из своего трекинга.

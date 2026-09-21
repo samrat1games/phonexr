@@ -161,13 +161,7 @@ class CinemaHands(
         val local = floatArrayOf((x - .5f) * 2f * TAN_X, (.5f - y) * 2f * TAN_Y, -1f, 0f)
         val world = FloatArray(4)
         Matrix.multiplyMV(world, 0, head, 0, local, 0)
-        if (world[2] >= -1e-3f) return null
-        val (centerY, screenZ, width, eye) = listOf(place[0], place[1], place[2], place[3])
-        val t = screenZ / world[2]
-        val hx = world[0] * t
-        val hy = eye + world[1] * t
-        val height = width * CinemaRenderer.SCREEN_PIXELS_H / CinemaRenderer.SCREEN_PIXELS_W
-        return floatArrayOf((hx + width / 2) / width, (centerY + height / 2 - hy) / height)
+        return CinemaAim.screenPoint(world, place)
     }
 
     private fun press(hand: Hand) {

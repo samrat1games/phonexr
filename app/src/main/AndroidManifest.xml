@@ -65,12 +65,13 @@
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:label="PhoneXR"
+        android:label="@string/app_label"
         android:supportsRtl="true"
         android:theme="@style/Theme.CardboardHands"
         android:usesCleartextTraffic="true">
         <!-- 6DoF in the VR home when ARCore is there; 3DoF otherwise. -->
         <meta-data android:name="com.google.ar.core" android:value="optional" />
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -79,6 +80,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".CardboardQrActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
@@ -97,7 +103,7 @@
         <activity
             android:name=".PersonaCaptureActivity"
             android:exported="false"
-            android:screenOrientation="portrait"
+            android:screenOrientation="landscape"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <activity
             android:name=".VrHomeActivity"
@@ -123,6 +129,17 @@
             android:name=".JoyConCameraActivity"
             android:exported="false"
             android:parentActivityName=".SettingsActivity" />
+        <activity
+            android:name=".PanoramaActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+        <activity
+            android:name=".ControllerActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:parentActivityName=".MainActivity" />
         <activity
             android:name=".AboutActivity"
             android:exported="false"

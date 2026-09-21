@@ -37,7 +37,13 @@ class PhoneXRInput(port: Int = 42425) : AutoCloseable {
         val stickY: Float = 0f,
         /** Щипок (большой и указательный вместе) и ладонь к лицу. В PH4 всегда false. */
         val pinch: Boolean = false,
-        val palmToFace: Boolean = false
+        val palmToFace: Boolean = false,
+        /** Continuous bend of each finger: 0 is straight, 1 is fully curled. */
+        val thumbCurl: Float = 0f,
+        val indexCurl: Float = 0f,
+        val middleCurl: Float = 0f,
+        val ringCurl: Float = 0f,
+        val pinkyCurl: Float = 0f,
     ) {
         fun isPressed(button: Button) = buttons and button.bit != 0
     }
@@ -79,10 +85,34 @@ class PhoneXRInput(port: Int = 42425) : AutoCloseable {
     private fun parse(message: String): State? {
         val parts = message.trim().split(' ')
         return when (parts.firstOrNull()) {
+            "PH6" -> if (parts.size >= 44) parse6(parts.drop(1)) else null
             "PH5" -> if (parts.size >= 30) parse5(parts.drop(1)) else null
             "PH4" -> if (parts.size >= 26) parse4(parts.drop(1)) else null
             else -> null
         }
+    }
+
+    /** PH6: PH5 plus five continuous finger curls in every hand block. */
+    private fun parse6(values: List<String>): State {
+        fun flag(index: Int) = values.getOrNull(index)?.toIntOrNull() == 1
+        fun hand(offset: Int, extra: Int) = Hand(
+            present = values[offset].toInt() != 0,
+            fist = values[offset + 1].toInt() != 0,
+            index = values[offset + 2].toInt() != 0,
+            thumb = values[offset + 3].toInt() != 0,
+            x = values[offset + 4].toFloat(), y = values[offset + 5].toFloat(), z = values[offset + 6].toFloat(),
+            qx = values[offset + 7].toFloat(), qy = values[offset + 8].toFloat(),
+            qz = values[offset + 9].toFloat(), qw = values[offset + 10].toFloat(),
+            buttons = values[offset + 11].toInt(), stickX = values[offset + 12].toFloat(), stickY = values[offset + 13].toFloat(),
+            thumbCurl = values[offset + 14].toFloat().coerceIn(0f, 1f),
+            indexCurl = values[offset + 15].toFloat().coerceIn(0f, 1f),
+            middleCurl = values[offset + 16].toFloat().coerceIn(0f, 1f),
+            ringCurl = values[offset + 17].toFloat().coerceIn(0f, 1f),
+            pinkyCurl = values[offset + 18].toFloat().coerceIn(0f, 1f),
+            pinch = flag(extra), palmToFace = flag(extra + 1),
+        )
+        val flags = values[38].toInt()
+        return State(hand(0, 39), hand(19, 41), flags and 1 != 0, flags and 2 != 0)
     }
 
     /**

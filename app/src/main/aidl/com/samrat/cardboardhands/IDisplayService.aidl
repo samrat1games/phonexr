@@ -3,6 +3,7 @@ package com.samrat.cardboardhands;
 import android.view.Surface;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.os.ParcelFileDescriptor;
 
 // Runs as the shell user through Shizuku: only shell may put other apps on a display PhoneXR draws.
 interface IDisplayService {
@@ -16,4 +17,6 @@ interface IDisplayService {
     String launch(String component, int displayId) = 3;
     void injectKey(in KeyEvent event, int displayId) = 4;
     void injectMotion(in MotionEvent event, int displayId) = 5;
+    // Installs a PhoneXR-prepared game through the shell service, without leaving VR for an APK UI.
+    String installApk(in ParcelFileDescriptor apk, long size) = 6;
 }

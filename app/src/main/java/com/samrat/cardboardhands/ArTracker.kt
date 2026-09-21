@@ -9,6 +9,7 @@ import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
+import com.google.ar.core.Plane
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import java.nio.ByteBuffer
@@ -30,6 +31,10 @@ class ArTracker private constructor(private val session: Session) {
     class CameraFrame(val bitmap: Bitmap, val timestampNs: Long, val viewLeft: Float, val viewTop: Float, val viewWidth: Float, val viewHeight: Float)
 
     @Volatile var tracking = false
+        private set
+    @Volatile var horizontalPlanes = 0
+        private set
+    @Volatile var verticalPlanes = 0
         private set
     /** Head position in the head tracker's world, metres, relative to where tracking started. */
     val position = FloatArray(3)
@@ -66,6 +71,8 @@ class ArTracker private constructor(private val session: Session) {
         alignYaw = Float.NaN
         hasLast = false
         smooth.forEach { it.reset() }
+        horizontalPlanes = 0
+        verticalPlanes = 0
     }
 
     /**
@@ -84,6 +91,13 @@ class ArTracker private constructor(private val session: Session) {
         }
         val camera = frame.camera
         tracking = camera.trackingState == TrackingState.TRACKING
+        if (tracking) {
+            val planes = session.getAllTrackables(Plane::class.java).filter {
+                it.trackingState == TrackingState.TRACKING && it.subsumedBy == null
+            }
+            horizontalPlanes = planes.count { it.type != Plane.Type.VERTICAL }
+            verticalPlanes = planes.count { it.type == Plane.Type.VERTICAL }
+        }
         synchronized(projection) { camera.getProjectionMatrix(projection, 0, .05f, 100f) }
         if (tracking) {
             val pose = camera.displayOrientedPose
@@ -177,7 +191,10 @@ class ArTracker private constructor(private val session: Session) {
             val config = Config(session).apply {
                 updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                 focusMode = Config.FocusMode.AUTO
-                planeFindingMode = Config.PlaneFindingMode.DISABLED
+                // Room geometry exists only in 6DoF. Horizontal and vertical planes are the basis
+                // for walls, tables and collision-aware PhoneXR experiences.
+                planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) depthMode = Config.DepthMode.AUTOMATIC
                 lightEstimationMode = Config.LightEstimationMode.DISABLED
             }
             session.configure(config)

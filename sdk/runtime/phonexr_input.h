@@ -46,6 +46,8 @@ struct phonexr_hand
 	uint32_t buttons;
 	float stick_x, stick_y;    /* стик Joy-Con, -1..1 (PH5; в PH4 — 0) */
 	bool pinch, palm_to_face;  /* щипок и ладонь к лицу (PH5; в PH4 — false) */
+	/* Непрерывный сгиб каждого пальца: 0 — прямой, 1 — полностью согнут (PH6). */
+	float thumb_curl, index_curl, middle_curl, ring_curl, pinky_curl;
 };
 
 struct phonexr_state
@@ -118,12 +120,26 @@ phonexr_input_poll(struct phonexr_input *input, struct phonexr_state *out_state)
 		int lpinch = 0, lpalm = 0, rpinch = 0, rpalm = 0;
 		struct phonexr_hand *l = &parsed.left;
 		struct phonexr_hand *r = &parsed.right;
-		/* PH5 (current): each hand also has the Joy-Con stick; pinch and palm-to-face at the end. */
+		/* PH6: PH5 plus five continuous finger curls in each hand block. */
 		int count = sscanf(packet,
+		                   "PH6 %d %d %d %d %f %f %f %f %f %f %f %d %f %f %f %f %f %f %f "
+		                   "%d %d %d %d %f %f %f %f %f %f %f %d %f %f %f %f %f %f %f %d %d %d %d %d",
+		                   &lp, &lf, &li, &lt, &l->x, &l->y, &l->z, &l->qx, &l->qy, &l->qz, &l->qw, &lb, &l->stick_x, &l->stick_y,
+		                   &l->thumb_curl, &l->index_curl, &l->middle_curl, &l->ring_curl, &l->pinky_curl,
+		                   &rp, &rf, &ri, &rt, &r->x, &r->y, &r->z, &r->qx, &r->qy, &r->qz, &r->qw, &rb, &r->stick_x, &r->stick_y,
+		                   &r->thumb_curl, &r->index_curl, &r->middle_curl, &r->ring_curl, &r->pinky_curl,
+		                   &fl, &lpinch, &lpalm, &rpinch, &rpalm);
+		if (count != 43) {
+			memset(&parsed, 0, sizeof(parsed));
+			l = &parsed.left;
+			r = &parsed.right;
+			/* PH5: each hand also has the Joy-Con stick; gestures are appended. */
+			count = sscanf(packet,
 		                   "PH5 %d %d %d %d %f %f %f %f %f %f %f %d %f %f %d %d %d %d %f %f %f %f %f %f %f %d %f %f %d %d %d %d %d",
 		                   &lp, &lf, &li, &lt, &l->x, &l->y, &l->z, &l->qx, &l->qy, &l->qz, &l->qw, &lb, &l->stick_x, &l->stick_y,
 		                   &rp, &rf, &ri, &rt, &r->x, &r->y, &r->z, &r->qx, &r->qy, &r->qz, &r->qw, &rb, &r->stick_x, &r->stick_y,
 		                   &fl, &lpinch, &lpalm, &rpinch, &rpalm);
+		}
 		if (count < 29) {
 			memset(&parsed, 0, sizeof(parsed));
 			count = sscanf(packet,

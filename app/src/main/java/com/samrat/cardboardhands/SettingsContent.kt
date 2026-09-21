@@ -1,6 +1,5 @@
 package com.samrat.cardboardhands
 
-import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -11,17 +10,14 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
-import android.provider.MediaStore
-import android.util.Size
 import android.view.MotionEvent
 import kotlin.concurrent.thread
 
 /**
  * The VR Settings app, visionOS style: a sidebar and a page. For now: About the headset, the
- * Persona (a face made from a photo) and the play-area boundary.
+ * Persona (made by a guided camera scan) and the play-area boundary.
  */
 class SettingsContent(
     private val context: Context,
@@ -31,12 +27,22 @@ class SettingsContent(
         /** "6DoF · ARCore" or "3DoF" and whether the room is tracked right now. */
         fun trackingText(): String
         fun showPersona()
+        fun scanPersona()
         fun startBoundary()
         fun clearBoundary()
         fun boundaryText(): String
+        fun startRoomScan()
+        fun roomText(): String
+        fun openSystemSettings()
+        fun requestShizuku()
+        fun shizukuText(): String
+        fun setHomeStyle(style: Settings.HomeStyle)
     }
 
-    private enum class Page(val title: String) { ABOUT(tr("О гарнитуре")), UPDATE(tr("Обновление ПО")), FACE(tr("Лицо")), BOUNDARY(tr("Граница")) }
+    private enum class Page(val title: String) {
+        ABOUT(tr("О гарнитуре")), CONNECTIVITY("Wi‑Fi и Bluetooth"), APPEARANCE("Интерфейс"),
+        UPDATE(tr("Обновление ПО")), FACE(tr("Лицо")), ROOM(tr("Сканирование комнаты")), BOUNDARY(tr("Граница"))
+    }
 
     override val pixelWidth = 1600
     override val pixelHeight = 1000
@@ -46,20 +52,23 @@ class SettingsContent(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     @Volatile private var fresh = true
     private var page = Page.ABOUT
-    /** Photo grid while choosing a face photo. */
-    private var picking = false
-    private var photos = emptyList<Uri>()
-    private val thumbs = HashMap<Uri, Bitmap>()
     private var status: String? = null
     private var busy = false
     private var preview: Bitmap? = null
+    private var lastRoomRefresh = 0L
     private val buttons = ArrayList<Pair<RectF, () -> Unit>>()
 
     override fun attach(context: Context, texture: SurfaceTexture?, onReady: () -> Unit) {
         thread { draw(); onReady() }
     }
 
-    override fun takeBitmap(): Bitmap? = if (fresh) synchronized(this) { fresh = false; bitmap } else null
+    override fun takeBitmap(): Bitmap? {
+        if (page == Page.ROOM && android.os.SystemClock.elapsedRealtime() - lastRoomRefresh > 750L) {
+            lastRoomRefresh = android.os.SystemClock.elapsedRealtime()
+            draw()
+        }
+        return if (fresh) synchronized(this) { fresh = false; bitmap } else null
+    }
 
     override fun toolbarTitle() = tr("Настройки")
 
@@ -75,7 +84,6 @@ class SettingsContent(
 
     private fun open(target: Page) {
         page = target
-        picking = false
         status = null
         if (target == Page.UPDATE && !checked) checkUpdate()
     }
@@ -145,32 +153,11 @@ class SettingsContent(
         }
     }
 
-    private fun choosePhoto() {
-        picking = true
-        status = null
-        photos = runCatching {
-            val list = ArrayList<Uri>()
-            context.contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Images.Media._ID),
-                null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC"
-            )?.use { cursor ->
-                while (cursor.moveToNext() && list.size < 12) {
-                    list += ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
-                }
-            }
-            list
-        }.getOrDefault(emptyList())
-    }
-
-    private fun buildFace(photo: Uri) {
-        picking = false
-        busy = true
-        status = "Изучаю лицо…"
-        draw()
-        val error = runCatching { Persona.build(context, photo) }.getOrElse { it.message ?: "Ошибка" }
-        busy = false
+    /** Called by the host after returning from the camera scanner. */
+    fun personaChanged() {
         preview = null
-        status = error ?: "Лицо готово. Скажите что-нибудь — рот будет двигаться."
+        status = if (Persona.exists(context)) "Персона готова" else "Сканирование отменено"
+        draw()
     }
 
     @Synchronized
@@ -192,11 +179,38 @@ class SettingsContent(
         }
         when (page) {
             Page.ABOUT -> about()
+            Page.CONNECTIVITY -> connectivity()
+            Page.APPEARANCE -> appearance()
             Page.FACE -> face()
+            Page.ROOM -> room()
             Page.BOUNDARY -> boundary()
             Page.UPDATE -> update()
         }
         fresh = true
+    }
+
+    private fun connectivity() {
+        text("Wi‑Fi и Bluetooth", 480f, 100f, 52f, Color.WHITE, bold = true)
+        wrap("Системные сети открываются прямо в отдельном VR‑окне. Для управления Android‑окнами нужен Shizuku.", 480f, 170f, 1560f, 34f)
+        card(480f, 330f, 3)
+        text("Wi‑Fi", 510f, 380f, 34f, Color.WHITE)
+        text("Bluetooth", 510f, 458f, 34f, Color.WHITE)
+        text("Shizuku", 510f, 536f, 34f, Color.WHITE)
+        text(host.shizukuText(), 1560f, 536f, 30f, Color.rgb(170, 170, 178), right = true)
+        button(RectF(480f, 700f, 980f, 780f), "Открыть настройки Android") { host.openSystemSettings() }
+        button(RectF(1010f, 700f, 1480f, 780f), "Разрешить Shizuku") { host.requestShizuku() }
+    }
+
+    private fun appearance() {
+        text("Стиль главного меню", 480f, 100f, 52f, Color.WHITE, bold = true)
+        wrap("Большое меню показывает библиотеку перед вами. Компактная панель остаётся снизу и листается по страницам.", 480f, 170f, 1560f, 34f)
+        val selected = Settings.homeStyle(context)
+        button(RectF(480f, 390f, 950f, 500f), if (selected == Settings.HomeStyle.LARGE) "✓ Большое" else "Большое") {
+            Settings.setHomeStyle(context, Settings.HomeStyle.LARGE); host.setHomeStyle(Settings.HomeStyle.LARGE)
+        }
+        button(RectF(980f, 390f, 1560f, 500f), if (selected == Settings.HomeStyle.COMPACT) "✓ Компактная панель" else "Компактная панель") {
+            Settings.setHomeStyle(context, Settings.HomeStyle.COMPACT); host.setHomeStyle(Settings.HomeStyle.COMPACT)
+        }
     }
 
     private fun about() {
@@ -217,7 +231,7 @@ class SettingsContent(
             "Отслеживание" to host.trackingText(),
             "Экран" to "${metrics.widthPixels}×${metrics.heightPixels}, по ${metrics.widthPixels / 2}×${metrics.heightPixels} на глаз",
             "Поле зрения" to "90° по вертикали",
-            "Межзрачковое" to "64 мм",
+            "Межзрачковое" to "${Settings.ipdMm(context)} мм",
             "Руки" to "камера, 21 точка на руку",
             "OpenXR" to runtime,
             "Батарея" to (battery?.let { "$it %" } ?: "—"),
@@ -232,25 +246,8 @@ class SettingsContent(
 
     private fun face() {
         text(tr("Лицо"), 480f, 100f, 52f, Color.WHITE, bold = true)
-        if (picking) {
-            text("Выберите фото, где лицо видно спереди", 480f, 160f, 32f, Color.rgb(170, 170, 178))
-            photos.forEachIndexed { index, uri ->
-                val column = index % 4; val row = index / 4
-                val rect = RectF(480f + column * 272f, 190f + row * 262f, 732f + column * 272f, 432f + row * 262f)
-                val thumb = thumbs.getOrPut(uri) {
-                    runCatching { context.contentResolver.loadThumbnail(uri, Size(300, 300), null) }.getOrNull()
-                        ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-                }
-                canvas.save()
-                canvas.clipRect(rect)
-                val scale = maxOf(rect.width() / thumb.width, rect.height() / thumb.height)
-                val w = thumb.width * scale; val h = thumb.height * scale
-                canvas.drawBitmap(thumb, null, RectF(rect.centerX() - w / 2, rect.centerY() - h / 2, rect.centerX() + w / 2, rect.centerY() + h / 2), paint)
-                canvas.restore()
-                buttons += rect to { buildFace(uri) }
-            }
-            if (photos.isEmpty()) text("Нет фото или нет доступа к галерее", 480f, 260f, 34f, Color.WHITE)
-            button(RectF(480f, 900f, 780f, 970f), tr("Отмена")) { picking = false }
+        if (BuildConfig.LITE) {
+            wrap("Persona отключена в Lite. В звонках показывается только имя собеседника.", 480f, 190f, 1560f, 34f)
             return
         }
         val exists = Persona.exists(context)
@@ -264,24 +261,30 @@ class SettingsContent(
         }
         val info = if (exists) "Ваше лицо для VR: моргает само, а рот двигается, когда вы говорите. " +
             "Нейросеть отличает речь от случайных звуков, микрофон очищается от шума."
-        else "Загрузите своё фото: PhoneXR найдёт на нём лицо и сделает живой портрет, " +
-            "который моргает и говорит вашим голосом."
+        else "Запустите сканирование: камера сама запишет лицо спереди и с боков. Выбирать фото из галереи не нужно."
         wrap(info, if (exists) 940f else 480f, 190f, if (exists) 1560f else 1560f, 34f)
         status?.let { wrap(it, 480f, 640f, 1560f, 32f, Color.rgb(255, 180, 90)) }
         if (busy) return
         if (exists) {
             button(RectF(480f, 740f, 830f, 820f), tr("Показать лицо")) { host.showPersona() }
-            button(RectF(860f, 740f, 1210f, 820f), "Другое фото") { choosePhoto() }
+            button(RectF(860f, 740f, 1210f, 820f), tr("Сканировать заново")) { host.scanPersona() }
             button(RectF(1240f, 740f, 1560f, 820f), tr("Удалить"), Color.rgb(255, 69, 58)) {
                 Persona.delete(context); preview = null; status = "Лицо удалено"
             }
         } else {
-            button(RectF(480f, 740f, 880f, 820f), tr("Добавить лицо")) { choosePhoto() }
+            button(RectF(480f, 740f, 980f, 820f), tr("Сканировать камерой")) { host.scanPersona() }
         }
     }
 
     private fun boundary() {
         text(tr("Граница"), 480f, 100f, 52f, Color.WHITE, bold = true)
+        if (host.trackingText().startsWith("3DoF")) {
+            wrap(
+                "Сейчас включён 3DoF: поворот головы работает, но положение в комнате, стены, столы и столкновения недоступны. Включите 6DoF в настройках PhoneXR.",
+                480f, 180f, 1560f, 36f, Color.rgb(255, 159, 10)
+            )
+            return
+        }
         wrap(
             "Обойдите свободное место по краю — PhoneXR запомнит границу. Если подойдёте к ней, " +
                 "появится стена, а если выйдете — предупреждение. Начинайте с того же места, где запускаете VR.",
@@ -290,6 +293,19 @@ class SettingsContent(
         text(host.boundaryText(), 480f, 470f, 36f, Color.rgb(170, 170, 178))
         button(RectF(480f, 740f, 900f, 820f), tr("Настроить границу")) { host.startBoundary() }
         button(RectF(930f, 740f, 1300f, 820f), tr("Удалить границу"), Color.rgb(255, 69, 58)) { host.clearBoundary() }
+    }
+
+    private fun room() {
+        text(tr("Сканирование комнаты"), 480f, 100f, 52f, Color.WHITE, bold = true)
+        if (host.trackingText().startsWith("3DoF")) {
+            wrap("Сканирование пола, стен и столов работает только в 6DoF. Включите 6DoF в настройках PhoneXR и установите Google Play Services for AR.",
+                480f, 180f, 1560f, 36f, Color.rgb(255, 159, 10))
+            return
+        }
+        wrap("Медленно осмотрите пол, стены и поверхности со всех сторон. PhoneXR показывает найденные горизонтальные и вертикальные плоскости; граница комнаты уже ограничивает движение 3D‑предметов.",
+            480f, 170f, 1560f, 34f)
+        text(host.roomText(), 480f, 480f, 36f, Color.rgb(170, 170, 178))
+        button(RectF(480f, 740f, 990f, 820f), tr("Начать новое сканирование")) { host.startRoomScan() }
     }
 
     private fun card(x: Float, y: Float, rows: Int) {

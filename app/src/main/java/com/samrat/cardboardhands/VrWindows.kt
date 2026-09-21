@@ -4,7 +4,10 @@ import android.annotation.SuppressLint
 import android.app.Presentation
 import android.content.ContentUris
 import android.content.Context
+import android.content.ComponentName
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -30,6 +33,11 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlin.concurrent.thread
+import java.io.DataInputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
  * A window floating in the VR home. Its picture comes from a [Content]: an Android surface (web page,
@@ -41,10 +49,13 @@ class VrWindow(val id: String, val title: String, val iconId: String, val conten
     @Volatile var yaw = 0f
     @Volatile var height = 0f
     @Volatile var minimized = false
-    /** Size set by dragging the corner handle. */
-    @Volatile var scale = 1f
-    val width get() = WIDTH_M * scale
-    val heightM get() = width * content.pixelHeight / content.pixelWidth
+    /** Width and height are independent: the corner follows the hand instead of locking aspect. */
+    @Volatile var widthScale = 1f
+    @Volatile var heightScale = 1f
+    /** Desktop stream only: 0 is flat, otherwise the screen wraps around the viewer. */
+    @Volatile var arcDegrees = 0f
+    val width get() = WIDTH_M * widthScale
+    val heightM get() = WIDTH_M * content.pixelHeight / content.pixelWidth * heightScale
 
     interface Content {
         val pixelWidth: Int
@@ -285,9 +296,10 @@ class BrowserContent(private val startUrl: String, private val onWebXr: (String)
 }
 
 /** Another app (Minecraft first of all) on a Shizuku virtual display, played with a gamepad or by pinching. */
-class ShizukuAppContent(private val packageName: String, private val onError: (String) -> Unit) : VrWindow.Content {
-    override val pixelWidth = 1920
-    override val pixelHeight = 1080
+class ShizukuAppContent(context: Context, private val packageName: String, private val onError: (String) -> Unit) : VrWindow.Content {
+    private val portrait = requestedPortrait(context, packageName)
+    override val pixelWidth = if (portrait) 1080 else 1920
+    override val pixelHeight = if (portrait) 1920 else 1080
     override val external = true
     private var connection: ServiceConnection? = null
     private var service: IDisplayService? = null
@@ -357,18 +369,99 @@ class ShizukuAppContent(private val packageName: String, private val onError: (S
         val ctx = context
         connection?.let { if (ctx != null) VirtualScreen.unbind(ctx, it) }
     }
+
+    companion object {
+        /** Honour the launched activity's Android orientation; ordinary phone apps default portrait. */
+        private fun requestedPortrait(context: Context, packageName: String): Boolean {
+            val component = VirtualScreen.launcherComponent(context, packageName)?.let(ComponentName::unflattenFromString)
+            val orientation = component?.let {
+                runCatching { context.packageManager.getActivityInfo(it, 0).screenOrientation }.getOrNull()
+            }
+            return when (orientation) {
+                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE -> false
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT -> true
+                else -> runCatching {
+                    context.packageManager.getApplicationInfo(packageName, 0).category != ApplicationInfo.CATEGORY_GAME
+                }.getOrDefault(true)
+            }
+        }
+    }
+}
+
+/** Monitor streamed by the native Windows/Linux/macOS PhoneXR companion. */
+class DesktopStreamContent(private val onStatus: (String) -> Unit) : VrWindow.Content {
+    override val pixelWidth = 1600
+    override val pixelHeight = 900
+    override val external = false
+    @Volatile private var next: Bitmap? = null
+    @Volatile private var running = true
+    private var discovery: DatagramSocket? = null
+    private var socket: Socket? = null
+
+    override fun attach(context: Context, texture: SurfaceTexture?, onReady: () -> Unit) {
+        thread(name = "PhoneXR desktop stream") {
+            while (running) {
+                runCatching {
+                    onStatus("Ищу PhoneXR Desktop в локальной сети…")
+                    val udp = DatagramSocket(null).also { discovery = it; it.reuseAddress = true; it.bind(InetSocketAddress(24819)) }
+                    val bytes = ByteArray(512); val packet = DatagramPacket(bytes, bytes.size)
+                    udp.receive(packet)
+                    val parts = String(packet.data, 0, packet.length).split(' ', limit = 3)
+                    require(parts.firstOrNull() == "PHONEXR_DESKTOP_V1")
+                    val port = parts.getOrNull(1)?.toIntOrNull() ?: 24820
+                    udp.close(); discovery = null
+                    val tcp = Socket().also { socket = it; it.connect(InetSocketAddress(packet.address, port), 4000); it.tcpNoDelay = true }
+                    onStatus("Подключено: ${parts.getOrNull(2) ?: packet.address.hostAddress}")
+                    val input = DataInputStream(tcp.getInputStream())
+                    while (running) {
+                        val magic = ByteArray(4); input.readFully(magic)
+                        require(String(magic) == "PXS1")
+                        input.readUnsignedShort(); input.readUnsignedShort()
+                        val size = input.readInt(); require(size in 1..20_000_000)
+                        val jpeg = ByteArray(size); input.readFully(jpeg)
+                        BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)?.let { frame ->
+                            val old = next; next = frame; old?.takeIf { it !== frame }?.recycle(); onReady()
+                        }
+                    }
+                }.onFailure { if (running) { onStatus("Связь с ПК потеряна, переподключаюсь…"); Thread.sleep(700) } }
+                runCatching { socket?.close() }; socket = null
+            }
+        }
+    }
+
+    override fun takeBitmap(): Bitmap? = next.also { next = null }
+    override fun touch(action: Int, u: Float, v: Float) = Unit
+    override fun release() { running = false; runCatching { discovery?.close() }; runCatching { socket?.close() }; next?.recycle(); next = null }
 }
 
 /**
- * Spatial Photos: the gallery as a grid; a photo opens large. Side-by-side stereo photos (twice as
- * wide as tall, or named "sbs"/"spatial"/"3d") are shown in 3D, each eye its own half.
+ * 3D memories: the gallery as a grid of photos and videos; one opens large. What holds two eyes
+ * (side by side or one over the other) is shown in 3D, each eye taking its own half — see [Spatial].
+ * A video opens in its own window, through [onVideo].
  */
-class PhotosContent(private val context: Context) : VrWindow.Content {
+class PhotosContent(
+    private val context: Context,
+    private val onVideo: (Uri, String, Int, Int) -> Unit = { _, _, _, _ -> },
+    /** A 360° or 180° memory does not fit a window: it goes around the viewer instead. */
+    private val onPanorama: (Uri, String, Int, Int, Boolean) -> Unit = { _, _, _, _, _ -> },
+) : VrWindow.Content {
     override val pixelWidth = 1600
     override val pixelHeight = 1000
     override val external = false
-    private data class Photo(val uri: Uri, val name: String, val width: Int, val height: Int) {
-        val stereo get() = width >= height * 1.9f || listOf("sbs", "spatial", "3d").any { name.lowercase().contains(it) }
+    private data class Photo(
+        val uri: Uri,
+        val name: String,
+        val width: Int,
+        val height: Int,
+        val video: Boolean = false,
+    ) {
+        val layout get() = Spatial.layout(name, width, height)
+        val shape get() = Spatial.shape(name, width, height, layout)
+        val stereo get() = layout != Spatial.Layout.MONO
     }
 
     private val bitmap = Bitmap.createBitmap(pixelWidth, pixelHeight, Bitmap.Config.ARGB_8888)
@@ -379,6 +472,9 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
     private val thumbs = HashMap<Uri, Bitmap>()
     @Volatile private var open: Photo? = null
     private var page = 0
+    /** What the window says while a flat photo is being turned into a 3D one. */
+    @Volatile private var status: String? = null
+    @Volatile private var busy = false
 
     override fun attach(context: Context, texture: SurfaceTexture?, onReady: () -> Unit) {
         thread(name = "PhoneXR photos") {
@@ -409,8 +505,8 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
 
     override fun uv(eye: Int): FloatArray {
         val photo = open ?: return floatArrayOf(0f, 0f, 1f, 1f)
-        return if (photo.stereo) (if (eye == 0) floatArrayOf(0f, 0f, .5f, 1f) else floatArrayOf(.5f, 0f, 1f, 1f))
-        else floatArrayOf(0f, 0f, 1f, 1f)
+        // The picture fills the window, so each eye's half of the window is that eye's half of it.
+        return Spatial.uv(photo.layout, eye)
     }
 
     override fun touch(action: Int, u: Float, v: Float) {
@@ -418,7 +514,9 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
         thread {
             val current = open
             if (current != null) {
-                open = null
+                // The button under a flat photo turns it into a 3D one; anywhere else closes it.
+                if (v > .88f && u < .3f && !current.stereo && !current.video) makeStereo(current)
+                else open = null
             } else {
                 val column = (u * COLUMNS).toInt().coerceIn(0, COLUMNS - 1)
                 when {
@@ -426,7 +524,15 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
                     v > .92f && u > .8f -> page = (page + 1).coerceAtMost((photos.size - 1) / PER_PAGE)
                     v <= .92f -> {
                         val row = (v / .92f * ROWS).toInt().coerceIn(0, ROWS - 1)
-                        open = photos.getOrNull(page * PER_PAGE + row * COLUMNS + column)
+                        val picked = photos.getOrNull(page * PER_PAGE + row * COLUMNS + column)
+                        when {
+                            picked == null -> open = null
+                            picked.shape != Spatial.Shape.FLAT ->
+                                onPanorama(picked.uri, picked.name, picked.width, picked.height, picked.video)
+                            // A video plays in a window of its own, with a timeline under it.
+                            picked.video -> onVideo(picked.uri, picked.name, picked.width, picked.height)
+                            else -> open = picked
+                        }
                     }
                 }
             }
@@ -434,7 +540,39 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
         }
     }
 
-    private fun query(): List<Photo> = runCatching {
+    /** Photos and videos of the gallery, newest first. */
+    /**
+     * Turns a flat photo into a 3D one: the depth network says how far everything is, and the photo
+     * is drawn again for each eye. The copy goes to the gallery and opens right away.
+     */
+    private fun makeStereo(photo: Photo) {
+        if (busy) return
+        busy = true
+        thread {
+            try {
+                if (!DepthModel.installed(context)) {
+                    status = "Нейросеть глубины не скачана: включите её в настройках PhoneXR (${DepthModel.MEGABYTES} МБ)"
+                    return@thread
+                }
+                val made = SpatialPhoto.create(context, photo.uri, photo.name) { stage ->
+                    status = stage
+                    draw()
+                }
+                photos = query()
+                open = photos.firstOrNull { it.uri == made } ?: open
+                status = "Готово: 3D‑копия лежит в галерее"
+            } catch (failure: Throwable) {
+                status = failure.message ?: "Не получилось сделать 3D"
+            } finally {
+                busy = false
+                draw()
+            }
+        }
+    }
+
+    private fun query(): List<Photo> = images() + videos()
+
+    private fun images(): List<Photo> = runCatching {
         val list = ArrayList<Photo>()
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -444,6 +582,21 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
             while (cursor.moveToNext() && list.size < 400) {
                 val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
                 list += Photo(uri, cursor.getString(1) ?: "", cursor.getInt(2), cursor.getInt(3))
+            }
+        }
+        list
+    }.getOrDefault(emptyList())
+
+    private fun videos(): List<Photo> = runCatching {
+        val list = ArrayList<Photo>()
+        context.contentResolver.query(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.WIDTH, MediaStore.Video.Media.HEIGHT),
+            null, null, "${MediaStore.Video.Media.DATE_ADDED} DESC"
+        )?.use { cursor ->
+            while (cursor.moveToNext() && list.size < 200) {
+                val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
+                list += Photo(uri, cursor.getString(1) ?: "", cursor.getInt(2), cursor.getInt(3), video = true)
             }
         }
         list
@@ -464,6 +617,21 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
                 val h = full.height * scale
                 canvas.drawBitmap(full, null, RectF((pixelWidth - w) / 2, (pixelHeight - h) / 2, (pixelWidth + w) / 2, (pixelHeight + h) / 2), paint)
             }
+            // A flat photo can be made into a 3D one, right here.
+            if (!photo.stereo && !photo.video) {
+                paint.color = Color.argb(220, 10, 132, 255)
+                canvas.drawRoundRect(RectF(40f, pixelHeight - 110f, 360f, pixelHeight - 30f), 40f, 40f, paint)
+                paint.color = Color.WHITE
+                paint.textSize = 36f
+                canvas.drawText(if (busy) "Делаю 3D…" else "Сделать 3D", 90f, pixelHeight - 58f, paint)
+            }
+            status?.let { text ->
+                paint.color = Color.argb(200, 0, 0, 0)
+                canvas.drawRoundRect(RectF(400f, pixelHeight - 110f, pixelWidth - 40f, pixelHeight - 30f), 40f, 40f, paint)
+                paint.color = Color.WHITE
+                paint.textSize = 32f
+                canvas.drawText(text, 430f, pixelHeight - 58f, paint)
+            }
         } else {
             val start = page * PER_PAGE
             val cellW = pixelWidth / COLUMNS.toFloat()
@@ -476,12 +644,20 @@ class PhotosContent(private val context: Context) : VrWindow.Content {
                         ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
                 }
                 canvas.drawBitmap(thumb, null, RectF(left + 8, top + 8, left + cellW - 8, top + cellH - 8), paint)
-                if (item.stereo) {
+                val badge = when {
+                    item.shape != Spatial.Shape.FLAT && item.stereo -> "3D 360"
+                    item.shape != Spatial.Shape.FLAT -> "360"
+                    item.stereo -> "3D"
+                    item.video -> "▶"
+                    else -> null
+                }
+                if (badge != null) {
                     paint.color = Color.argb(200, 0, 0, 0)
-                    canvas.drawRoundRect(RectF(left + 18, top + 18, left + 120, top + 62), 20f, 20f, paint)
-                    paint.color = Color.WHITE
                     paint.textSize = 28f
-                    canvas.drawText("3D", left + 46, top + 52, paint)
+                    val badgeWidth = paint.measureText(badge) + 52
+                    canvas.drawRoundRect(RectF(left + 18, top + 18, left + 18 + badgeWidth, top + 62), 20f, 20f, paint)
+                    paint.color = Color.WHITE
+                    canvas.drawText(badge, left + 44, top + 52, paint)
                 }
             }
             paint.color = Color.WHITE

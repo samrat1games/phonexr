@@ -21,7 +21,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK = os.environ.get("ANDROID_HOME") or os.path.expanduser("~/Library/Android/sdk")
 NAME = "PhoneXR Runtime"
-VERSION_CODE = 2
+VERSION_CODE = 3
 
 
 def build_tool(name):
@@ -77,7 +77,7 @@ def rebrand(folder):
     yml = os.path.join(folder, "apktool.yml")
     text = open(yml, encoding="utf-8").read()
     text = re.sub(r"versionInfo:\n(  versionCode: .*\n)?", f"versionInfo:\n  versionCode: {VERSION_CODE}\n", text)
-    text = re.sub(r"versionName: .*", "versionName: 1.0.1", text)
+    text = re.sub(r"versionName: .*", "versionName: 1.1.0", text)
     open(yml, "w", encoding="utf-8").write(text)
 
 

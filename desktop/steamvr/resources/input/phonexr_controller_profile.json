@@ -1,0 +1,11 @@
+{
+  "jsonid": "input_profile",
+  "controller_type": "phonexr_controller",
+  "device_class": "TrackedDeviceClass_Controller",
+  "input_source": {
+    "/input/trigger": { "type": "trigger", "binding_image_point": [70, 45] },
+    "/input/squeeze": { "type": "trigger", "binding_image_point": [24, 88] },
+    "/input/system": { "type": "button", "binding_image_point": [48, 24] },
+    "/output/haptic": { "type": "vibration", "binding_image_point": [50, 110] }
+  }
+}

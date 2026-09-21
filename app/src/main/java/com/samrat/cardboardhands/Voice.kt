@@ -40,6 +40,8 @@ class Voice(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun start() {
+        // Lite has no sound classifier: the model is not in it and a budget phone cannot spare it.
+        if (BuildConfig.LITE) return
         if (running) return
         running = true
         thread = kotlin.concurrent.thread(name = "PhoneXR voice") {

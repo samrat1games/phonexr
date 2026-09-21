@@ -38,7 +38,7 @@ import zone.ien.hig.theme.CupertinoTheme
 import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
-/** "Обновление ПО" for the app, laid out like the iPhone's Software Update screen. */
+/** Native "Обновление ПО" screen for PhoneXR. */
 class UpdateActivity : ComponentActivity() {
     private var release by mutableStateOf<Updates.Release?>(null)
     private var checking by mutableStateOf(true)
@@ -88,16 +88,12 @@ class UpdateActivity : ComponentActivity() {
     private fun Screen() {
         HigPage(title = tr("Обновление ПО"), onBack = ::finish) {
             HigSection {
-                SectionItem(trailingContent = {
-                    CupertinoSwitch(checked = auto, onCheckedChange = { auto = it; Updates.setAutoUpdate(this@UpdateActivity, it) })
-                }) { CupertinoText(tr("Автообновление")) }
-                SectionItem(trailingContent = {
-                    CupertinoSwitch(checked = beta, onCheckedChange = { beta = it; Updates.setBeta(this@UpdateActivity, it); check() })
-                }) { CupertinoText(tr("Бета‑обновления")) }
+                HigSwitchRow(tr("Автообновление"), auto) { auto = it; Updates.setAutoUpdate(this@UpdateActivity, it) }
+                HigSwitchRow(tr("Бета‑обновления"), beta) { beta = it; Updates.setBeta(this@UpdateActivity, it); check() }
             }
             val found = release
             when {
-                checking -> Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CupertinoActivityIndicator() }
+                checking -> Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { HigSpinner() }
                 found != null -> UpdateCard(found)
                 else -> Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     CupertinoText("PhoneXR ${Updates.currentVersion(this@UpdateActivity)}", fontWeight = FontWeight.SemiBold)

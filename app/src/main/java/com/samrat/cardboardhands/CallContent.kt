@@ -32,7 +32,7 @@ class CallContent(private val context: Context) : VrWindow.Content {
     private val selfBlink = Blinker()
     private var remoteRenderer: PersonaRenderer? = null
     private var remoteFaceShown: Persona.Face? = null
-    private val selfRenderer = Persona.load(context)?.let { PersonaRenderer(it) }
+    private val selfRenderer = if (BuildConfig.LITE) null else Persona.load(context)?.let { PersonaRenderer(it) }
     private var voice: Voice? = null
     private val listener: () -> Unit = { fresh = true }
     /** People added in the Friends tab; shown first, online or not. */
@@ -90,7 +90,7 @@ class CallContent(private val context: Context) : VrWindow.Content {
             }
             Calls.State.RINGING -> {
                 center("${Calls.peer?.name ?: "Кто-то"} звонит", 420f, 60f, bold = true)
-                center("Звонок с персоной", 490f, 36f, color = GREY)
+                if (!BuildConfig.LITE) center("Звонок с персоной", 490f, 36f, color = GREY)
                 button(RectF(300f, 680f, 660f, 780f), tr("Отклонить"), RED) { Calls.decline() }
                 button(RectF(740f, 680f, 1100f, 780f), tr("Принять"), GREEN) { Calls.accept() }
             }
@@ -136,6 +136,16 @@ class CallContent(private val context: Context) : VrWindow.Content {
     }
 
     private fun inCall() {
+        if (BuildConfig.LITE) {
+            // Lite never renders or transmits a face or hands: only the peer's name and call controls.
+            center(Calls.peer?.name ?: tr("Звонок"), 410f, 68f, bold = true)
+            if (Calls.remoteTalking) center("говорит", 475f, 30f, color = GREEN)
+            button(RectF(360f, 880f, 680f, 970f), if (Calls.muted) "Микрофон выкл." else tr("Микрофон"), if (Calls.muted) RED else Color.argb(120, 255, 255, 255)) {
+                Calls.muted = !Calls.muted
+            }
+            button(RectF(720f, 880f, 1040f, 970f), tr("Завершить"), RED) { Calls.hangUp() }
+            return
+        }
         // The other person's Persona, big in the middle.
         val face = Calls.remoteFace
         if (face != null && face !== remoteFaceShown) {
@@ -150,7 +160,8 @@ class CallContent(private val context: Context) : VrWindow.Content {
         val hands = Calls.remoteHands
         if (hands.isNotEmpty()) {
             handsLayer.eraseColor(Color.TRANSPARENT)
-            val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+            val handImage = Calls.remoteHandImage
+            val silhouette = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(214, 164, 132) }
             for (points in hands) {
                 val xs = FloatArray(21) { points[it * 2] * pixelWidth }
                 val ys = FloatArray(21) { points[it * 2 + 1] * pixelHeight }
@@ -164,9 +175,16 @@ class CallContent(private val context: Context) : VrWindow.Content {
                     path.close()
                     i += 9
                 }
-                handsCanvas.drawPath(path, white)
+                if (handImage != null) {
+                    handsCanvas.save()
+                    handsCanvas.clipPath(path)
+                    handsCanvas.drawBitmap(handImage, null, RectF(0f, 0f, pixelWidth.toFloat(), pixelHeight.toFloat()), paint)
+                    handsCanvas.restore()
+                } else {
+                    handsCanvas.drawPath(path, silhouette)
+                }
             }
-            paint.alpha = 115
+            paint.alpha = 255
             canvas.drawBitmap(handsLayer, 0f, 0f, paint)
             paint.alpha = 255
         }

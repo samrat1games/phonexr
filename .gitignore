@@ -25,6 +25,7 @@ PhoneXR-iOS/livecontainer-stage/
 *.idsig
 *.dmg
 VR-Android/
+desktop/dist/
 
 # Большие локальные сборки и исходники сторонних проектов
 Builds/

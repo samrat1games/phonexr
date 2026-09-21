@@ -15,7 +15,7 @@ import kotlin.math.min
 
 /**
  * First start of the headset, like visionOS: "hello" in fifteen languages written in the air, then
- * the Persona (hands, then the face with the phone out of the headset), the user's name, the room
+ * the Persona (hands, then a guided face scan), the user's name, the room
  * boundary (6DoF), a pinch calibration, and "Welcome" before the home screen appears.
  */
 class Onboarding(private val context: Context, private val host: Host) {
@@ -27,7 +27,7 @@ class Onboarding(private val context: Context, private val host: Host) {
         fun finish()
     }
 
-    enum class Step { HELLO, PERSONA, HANDS, REMOVE_HEADSET, WAIT_PERSONA, INSERT_PHONE, NAME, ROOM, PINCH, WELCOME }
+    enum class Step { HELLO, HANDS, FACE_SCAN, WAIT_FACE, NAME, ROOM, PINCH, WELCOME }
 
     var step = Step.HELLO
         private set
@@ -56,10 +56,10 @@ class Onboarding(private val context: Context, private val host: Host) {
 
     private fun elapsed() = (SystemClock.elapsedRealtime() - stepStart) / 1000f
 
-    /** Called when the phone came back from the face capture. */
+    /** Called when the guided face capture is complete. */
     @Synchronized
     fun personaDone() {
-        if (step == Step.WAIT_PERSONA || step == Step.REMOVE_HEADSET) go(Step.INSERT_PHONE)
+        if (step == Step.WAIT_FACE) go(Step.NAME)
     }
 
     /** Hands from the camera: both open hands for the scan, pinch gaps for the calibration. */
@@ -73,7 +73,7 @@ class Onboarding(private val context: Context, private val host: Host) {
                 if (bothHandsSince == 0L) bothHandsSince = now
                 if (now - bothHandsSince > SCAN_MS) {
                     HandProfile.save(context, points)
-                    go(Step.REMOVE_HEADSET)
+                    go(if (BuildConfig.LITE) Step.NAME else Step.FACE_SCAN)
                 }
             }
             Step.PINCH -> {
@@ -134,39 +134,29 @@ class Onboarding(private val context: Context, private val host: Host) {
         when (step) {
             Step.HELLO -> {
                 hello(t)
-                if (t > 2f) button(RectF(WIDTH / 2f - 220f, 760f, WIDTH / 2f + 220f, 860f), "Продолжить") { go(Step.PERSONA) }
-            }
-            Step.PERSONA -> {
-                card()
-                title("Персона")
-                body("Ваша копия для VR: руки и лицо. Сначала PhoneXR изучит руки, затем лицо через камеру телефона.")
-                button(RectF(WIDTH / 2f - 460f, 720f, WIDTH / 2f - 20f, 820f), "Пропустить", Color.argb(90, 255, 255, 255)) { go(Step.NAME) }
-                button(RectF(WIDTH / 2f + 20f, 720f, WIDTH / 2f + 460f, 820f), "Начать") { go(Step.HANDS) }
+                if (t > 2f) button(RectF(WIDTH / 2f - 220f, 760f, WIDTH / 2f + 220f, 860f), tr("Продолжить")) { go(Step.HANDS) }
             }
             Step.HANDS -> {
                 card()
-                title("Покажите руки")
-                body("Держите обе руки перед собой, пальцы раскрыты. Не двигайтесь пару секунд.")
+                title(tr("Покажите руки"))
+                body(tr("Держите обе руки перед собой, пальцы раскрыты. Не двигайтесь пару секунд."))
                 val progress = if (bothHandsSince == 0L) 0f else ((SystemClock.elapsedRealtime() - bothHandsSince) / SCAN_MS.toFloat()).coerceIn(0f, 1f)
                 bar(progress)
                 button(RectF(WIDTH / 2f - 220f, 760f, WIDTH / 2f + 220f, 860f), "Пропустить", Color.argb(90, 255, 255, 255)) { go(Step.NAME) }
             }
-            Step.REMOVE_HEADSET -> {
+            Step.FACE_SCAN -> {
                 card()
-                title("Достаньте телефон из шлема")
-                body("Снимите шлем и возьмите телефон в руки: сейчас он отсканирует лицо фронтальной камерой.")
-                if (t > 3f) { go(Step.WAIT_PERSONA); host.capturePersona() }
+                title(tr("Сканирование лица"))
+                body(tr("Не вынимайте телефон из шлема. Покажите лицо внешней камере и медленно поворачивайте голову. Затылок сканировать не нужно."))
+                button(RectF(WIDTH / 2f - 460f, 720f, WIDTH / 2f - 20f, 820f), tr("Пропустить"), Color.argb(90, 255, 255, 255)) { go(Step.NAME) }
+                button(RectF(WIDTH / 2f + 20f, 720f, WIDTH / 2f + 460f, 820f), tr("Начать сканирование")) {
+                    go(Step.WAIT_FACE); host.capturePersona()
+                }
             }
-            Step.WAIT_PERSONA -> {
+            Step.WAIT_FACE -> {
                 card()
-                title("Сканирование лица")
-                body("Смотрите в фронтальную камеру телефона.")
-            }
-            Step.INSERT_PHONE -> {
-                card()
-                title("Вставьте телефон в шлем")
-                body("Персона готова. Наденьте шлем, чтобы продолжить.")
-                if (t > 4f) go(Step.NAME)
+                title(tr("Сканирование лица"))
+                body(tr("Следуйте подсказкам камеры: прямо, влево, вправо, вверх и вниз."))
             }
             Step.NAME -> {
                 card()

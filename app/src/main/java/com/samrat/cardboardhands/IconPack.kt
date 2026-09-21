@@ -6,7 +6,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 
 /**
- * iOS 27–style icons for the VR home, light or dark (assets/icons/light, assets/icons/dark), found
+ * PhoneXR icons for the VR home, light or dark (assets/icons/light, assets/icons/dark), found
  * by package name. Apps without one keep their own icon.
  */
 object IconPack {
@@ -24,6 +24,8 @@ object IconPack {
         "own:store" to "com.android.vending",
         "own:calls" to "com.google.android.apps.tachyon",
         "own:android" to "com.android.fileexplorer",
+        "own:desktop" to "own.desktop",
+        "own:leos" to "own.leos",
     )
 
     fun theme(context: Context): Theme =

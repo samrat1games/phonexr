@@ -24,21 +24,6 @@ import kotlin.math.sqrt
  * then points forward. Each other face is that pose turned by 90 degrees.
  */
 class JoyConMarkers {
-    data class Pose(
-        val found: Boolean = false,
-        /** Marker centre in the image, 0..1. */
-        val x: Float = .5f,
-        val y: Float = .5f,
-        /** Distance from the camera in metres. */
-        val distance: Float = .5f,
-        /** Controller rotation, OpenXR axes (x right, y up, z back). */
-        val qx: Float = 0f,
-        val qy: Float = 0f,
-        val qz: Float = 0f,
-        val qw: Float = 1f,
-        val markerId: Int = -1
-    )
-
     private val ready = OpenCVLoader.initLocal()
     private val detector = if (ready) ArucoDetector(Objdetect.getPredefinedDictionary(Objdetect.DICT_4X4_50)) else null
     private val rgba = Mat()
@@ -47,13 +32,13 @@ class JoyConMarkers {
     private val objectPoints = MatOfPoint3f(
         Point3(-half, half, 0.0), Point3(half, half, 0.0), Point3(half, -half, 0.0), Point3(-half, -half, 0.0)
     )
-    private val previous = arrayOf(Pose(), Pose())
+    private val previous = arrayOf(MarkerPose(), MarkerPose())
 
     val available get() = detector != null
 
     /** Left and right Joy-Con in an upright frame. */
-    fun process(frame: Bitmap): Pair<Pose, Pose> {
-        val detector = detector ?: return Pose() to Pose()
+    fun process(frame: Bitmap): Pair<MarkerPose, MarkerPose> {
+        val detector = detector ?: return MarkerPose() to MarkerPose()
         Utils.bitmapToMat(frame, rgba)
         Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
         val corners = ArrayList<Mat>()
@@ -67,7 +52,7 @@ class JoyConMarkers {
         }
         val distortion = MatOfDouble(0.0, 0.0, 0.0, 0.0)
         // Per hand keep the biggest marker: it is the most face-on and gives the steadiest pose.
-        val best = arrayOfNulls<Pair<Double, Pose>>(2)
+        val best = arrayOfNulls<Pair<Double, MarkerPose>>(2)
         for (i in 0 until ids.rows()) {
             val id = ids.get(i, 0)[0].toInt()
             if (id !in 0..7) continue
@@ -84,7 +69,7 @@ class JoyConMarkers {
             val cy = centre.sumOf { it.y } / 4
             val q = controllerRotation(rvec, id % 4)
             val t = DoubleArray(3).also { tvec.get(0, 0, it) }
-            val pose = Pose(
+            val pose = MarkerPose(
                 found = true,
                 x = (cx / frame.width).toFloat(),
                 y = (cy / frame.height).toFloat(),
@@ -94,7 +79,7 @@ class JoyConMarkers {
             )
             if (best[hand] == null || area > best[hand]!!.first) best[hand] = area to pose
         }
-        return smooth(0, best[0]?.second ?: Pose()) to smooth(1, best[1]?.second ?: Pose())
+        return smooth(0, best[0]?.second ?: MarkerPose()) to smooth(1, best[1]?.second ?: MarkerPose())
     }
 
     /** Marker rotation (OpenCV camera axes) to controller rotation (OpenXR axes). */
@@ -112,7 +97,7 @@ class JoyConMarkers {
         return multiply(body, UP_TO_FORWARD)
     }
 
-    private fun smooth(slot: Int, raw: Pose): Pose {
+    private fun smooth(slot: Int, raw: MarkerPose): MarkerPose {
         val last = previous[slot]
         if (!raw.found || !last.found) {
             if (raw.found) previous[slot] = raw

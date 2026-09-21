@@ -157,14 +157,14 @@ index a705d90..b25dd49 100644
 +	float current_x = x;
 +	float current_y = y;
 +	float current_z = z;
-+	uint64_t duration = time_s_to_ns(0.05);
++	uint64_t duration = time_s_to_ns(0.02);
 +	if (state->present && state->received_ns != 0) {
 +		phone_hand_sample_position(state, now, &current_x, &current_y, &current_z);
 +		duration = now - state->received_ns;
-+		if (duration < time_s_to_ns(0.04)) {
-+			duration = time_s_to_ns(0.04);
-+		} else if (duration > time_s_to_ns(0.09)) {
-+			duration = time_s_to_ns(0.09);
++		if (duration < time_s_to_ns(0.012)) {
++			duration = time_s_to_ns(0.012);
++		} else if (duration > time_s_to_ns(0.05)) {
++			duration = time_s_to_ns(0.05);
 +		}
 +	}
 +	state->present = present;

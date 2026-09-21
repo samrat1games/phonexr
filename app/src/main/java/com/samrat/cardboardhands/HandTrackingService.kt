@@ -44,7 +44,7 @@ class HandTrackingService : LifecycleService() {
     private var joyCons: JoyConTracker? = null
     private val vision = JoyConVision()
     private val markers by lazy { JoyConMarkers() }
-    @Volatile private var markerPoses = arrayOf(JoyConMarkers.Pose(), JoyConMarkers.Pose())
+    @Volatile private var markerPoses = arrayOf(MarkerPose(), MarkerPose())
     private val markerSeenAtMs = LongArray(2)
     /** Latest Joy-Con seen by the camera and when, per side. */
     @Volatile private var seen = arrayOf(JoyConVision.Detection(), JoyConVision.Detection())
@@ -105,6 +105,7 @@ class HandTrackingService : LifecycleService() {
             val provider = future.get()
             // Markers are small in the image; they need a sharper frame than hands.
             // A sharper frame gives steadier landmarks; markers need it anyway.
+            // Lite looks at a smaller frame: fewer pixels is the cheapest speed there is.
             val size = android.util.Size(640, 480)
             val analysis = ImageAnalysis.Builder()
                 .setTargetResolution(size)
@@ -195,7 +196,7 @@ class HandTrackingService : LifecycleService() {
             val reported = result.handednesses().getOrNull(index)?.firstOrNull()?.categoryName().orEmpty()
             // MediaPipe handedness assumes a mirrored selfie image; the back camera is not mirrored.
             val physicalLeft = reported.equals("Right", true)
-            val state = classify(points).let { hand ->
+            val state = classify(points, physicalLeft).let { hand ->
                 val gesture = HandGestures.shape(points, physicalLeft)
                 val pinch = pinchLatches[if (physicalLeft) 0 else 1].update(gesture)
                 hand.copy(pinch = pinch, palmToFace = gesture.palmToFace)
@@ -206,7 +207,7 @@ class HandTrackingService : LifecycleService() {
         stableRight.update(right)
     }
 
-    private fun classify(p: List<NormalizedLandmark>): HandState {
+    private fun classify(p: List<NormalizedLandmark>, physicalLeft: Boolean): HandState {
         fun d(a: Int, b: Int): Float {
             val dx = p[a].x() - p[b].x()
             val dy = p[a].y() - p[b].y()
@@ -238,11 +239,45 @@ class HandTrackingService : LifecycleService() {
         val palmX = (p[0].x() + p[5].x() + p[9].x() + p[13].x() + p[17].x()) / 5f
         val palmY = (p[0].y() + p[5].y() + p[9].y() + p[13].y() + p[17].y()) / 5f
         val depth = ((0.17f - palmWidth) / 0.13f).coerceIn(0f, 1f)
-        return HandState(true, fist, indexOnly, thumbOnly, palmX, palmY, depth)
+        fun jointCurl(a: Int, joint: Int, b: Int): Float {
+            val ax = p[a].x() - p[joint].x(); val ay = p[a].y() - p[joint].y(); val az = p[a].z() - p[joint].z()
+            val bx = p[b].x() - p[joint].x(); val by = p[b].y() - p[joint].y(); val bz = p[b].z() - p[joint].z()
+            val length = sqrt((ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz)).coerceAtLeast(.0001f)
+            val cosine = (ax * bx + ay * by + az * bz) / length
+            return ((cosine + .82f) / 1.64f).coerceIn(0f, 1f)
+        }
+        fun fingerCurl(mcp: Int, pip: Int, dip: Int, tip: Int) =
+            (jointCurl(mcp, pip, dip) * .55f + jointCurl(pip, dip, tip) * .45f).coerceIn(0f, 1f)
+        fun direction(from: Int, to: Int): Vec3 {
+            val x = p[to].x() - p[from].x(); val y = -(p[to].y() - p[from].y()); val z = -(p[to].z() - p[from].z())
+            val n = sqrt(x * x + y * y + z * z).coerceAtLeast(.0001f)
+            return Vec3(x / n, y / n, z / n)
+        }
+        fun cross(a: Vec3, b: Vec3): Vec3 {
+            val x = a.y * b.z - a.z * b.y; val y = a.z * b.x - a.x * b.z; val z = a.x * b.y - a.y * b.x
+            val n = sqrt(x * x + y * y + z * z).coerceAtLeast(.0001f)
+            return Vec3(x / n, y / n, z / n)
+        }
+        val side = if (physicalLeft) direction(17, 5) else direction(5, 17)
+        val palmUp = direction(0, 9)
+        val forward = cross(side, palmUp)
+        val up = cross(forward, side)
+        val q = matrixQuaternion(side, up, forward)
+        return HandState(
+            true, fist, indexOnly, thumbOnly, palmX, palmY, depth,
+            qx = q[0], qy = q[1], qz = q[2], qw = q[3],
+            thumbCurl = fingerCurl(1, 2, 3, 4),
+            indexCurl = fingerCurl(5, 6, 7, 8),
+            middleCurl = fingerCurl(9, 10, 11, 12),
+            ringCurl = fingerCurl(13, 14, 15, 16),
+            pinkyCurl = fingerCurl(17, 18, 19, 20),
+        )
     }
 
     private fun applySettings() {
         settings = Settings.load(this)
+        stableLeft.configure(settings.trackingSmoothness)
+        stableRight.configure(settings.trackingSmoothness)
         JoyConButtons.apply(settings)
     }
 
@@ -285,25 +320,39 @@ class HandTrackingService : LifecycleService() {
         val flags = (if (current.sixDof) 1 else 0) or (if (current.handMode == Settings.HandMode.HANDS) 2 else 0)
         val leftStick = JoyConButtons.stick(left = true)
         val rightStick = JoyConButtons.stick(left = false)
+        val leftRotation = if (leftJoy.connected) floatArrayOf(leftJoy.x, leftJoy.y, leftJoy.z, leftJoy.w)
+            else floatArrayOf(left.qx, left.qy, left.qz, left.qw)
+        val rightRotation = if (rightJoy.connected) floatArrayOf(rightJoy.x, rightJoy.y, rightJoy.z, rightJoy.w)
+            else floatArrayOf(right.qx, right.qy, right.qz, right.qw)
         val message = String.format(
             Locale.US,
-            "PH5 %d %d %d %d %.4f %.4f %.4f %.5f %.5f %.5f %.5f %d %.3f %.3f " +
-                "%d %d %d %d %.4f %.4f %.4f %.5f %.5f %.5f %.5f %d %.3f %.3f %d " +
-                // Appended after the runtime's fields (it ignores them): pinch and palm-to-face per hand.
+            "PH6 %d %d %d %d %.4f %.4f %.4f %.5f %.5f %.5f %.5f %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f " +
+                "%d %d %d %d %.4f %.4f %.4f %.5f %.5f %.5f %.5f %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f %d " +
                 "%d %d %d %d",
             left.present.i, left.fist.i, left.index.i, left.thumb.i, left.x, left.y, left.z,
-            leftJoy.x, leftJoy.y, leftJoy.z, leftJoy.w, leftMask,
-            leftStick[0], leftStick[1],
+            leftRotation[0], leftRotation[1], leftRotation[2], leftRotation[3], leftMask,
+            leftStick[0], leftStick[1], left.thumbCurl, left.indexCurl, left.middleCurl, left.ringCurl, left.pinkyCurl,
             right.present.i, right.fist.i, right.index.i, right.thumb.i, right.x, right.y, right.z,
-            rightJoy.x, rightJoy.y, rightJoy.z, rightJoy.w, rightMask,
-            rightStick[0], rightStick[1], flags,
+            rightRotation[0], rightRotation[1], rightRotation[2], rightRotation[3], rightMask,
+            rightStick[0], rightStick[1], right.thumbCurl, right.indexCurl, right.middleCurl, right.ringCurl, right.pinkyCurl, flags,
             left.pinch.i, left.palmToFace.i, right.pinch.i, right.palmToFace.i
         )
-        val bytes = message.toByteArray(Charsets.US_ASCII)
+        // The bundled runtime still understands PH5; SDK clients receive PH6 with finger curls.
+        val runtimeMessage = String.format(
+            Locale.US,
+            "PH5 %d %d %d %d %.4f %.4f %.4f %.5f %.5f %.5f %.5f %d %.3f %.3f " +
+                "%d %d %d %d %.4f %.4f %.4f %.5f %.5f %.5f %.5f %d %.3f %.3f %d %d %d %d %d",
+            left.present.i, left.fist.i, left.index.i, left.thumb.i, left.x, left.y, left.z,
+            leftRotation[0], leftRotation[1], leftRotation[2], leftRotation[3], leftMask, leftStick[0], leftStick[1],
+            right.present.i, right.fist.i, right.index.i, right.thumb.i, right.x, right.y, right.z,
+            rightRotation[0], rightRotation[1], rightRotation[2], rightRotation[3], rightMask, rightStick[0], rightStick[1], flags,
+            left.pinch.i, left.palmToFace.i, right.pinch.i, right.palmToFace.i
+        )
         // Monado listens on IPv4. Android may resolve getLoopbackAddress() to ::1.
         val loopback = InetAddress.getByName("127.0.0.1")
         // RUNTIME_PORT feeds Monado, SDK_PORT feeds a game that wants the raw hand and Joy-Con data.
-        for (port in intArrayOf(RUNTIME_PORT, SDK_PORT)) {
+        for ((port, payload) in arrayOf(RUNTIME_PORT to runtimeMessage, SDK_PORT to message)) {
+            val bytes = payload.toByteArray(Charsets.US_ASCII)
             try { socket.send(DatagramPacket(bytes, bytes.size, loopback, port)) }
             catch (_: Throwable) { }
         }
@@ -346,6 +395,15 @@ class HandTrackingService : LifecycleService() {
         val z: Float = .5f,
         val pinch: Boolean = false,
         val palmToFace: Boolean = false,
+        val thumbCurl: Float = 0f,
+        val indexCurl: Float = 0f,
+        val middleCurl: Float = 0f,
+        val ringCurl: Float = 0f,
+        val pinkyCurl: Float = 0f,
+        val qx: Float = 0f,
+        val qy: Float = 0f,
+        val qz: Float = 0f,
+        val qw: Float = 1f,
     )
 
     /** Removes landmark jitter and keeps a detected click alive long enough for games to read it. */
@@ -354,15 +412,32 @@ class HandTrackingService : LifecycleService() {
         private var y = .5f
         private var z = .5f
         // One Euro filters: calm while the hand holds still, responsive when it moves.
-        private val fx = HandGestures.OneEuro(minCutoff = .6f, beta = 1.4f, deadZone = .002f)
-        private val fy = HandGestures.OneEuro(minCutoff = .6f, beta = 1.4f, deadZone = .002f)
-        private val fz = HandGestures.OneEuro(minCutoff = .3f, beta = .6f, deadZone = .004f)
+        private var fx = HandGestures.OneEuro(minCutoff = .6f, beta = 1.4f, deadZone = .002f)
+        private var fy = HandGestures.OneEuro(minCutoff = .6f, beta = 1.4f, deadZone = .002f)
+        private var fz = HandGestures.OneEuro(minCutoff = .3f, beta = .6f, deadZone = .004f)
+        private var configured = -1
         private var pinchUntilMs = 0L
         private var palmToFace = false
         private var lastSeenMs = 0L
         private var fistUntilMs = 0L
         private var indexUntilMs = 0L
         private var thumbUntilMs = 0L
+        private val curls = FloatArray(5)
+        private val rotation = floatArrayOf(0f, 0f, 0f, 1f)
+
+        @Synchronized
+        fun configure(amount: Int) {
+            val value = amount.coerceIn(0, 100)
+            if (value == configured) return
+            configured = value
+            val t = value / 100f
+            val cutoff = 1.3f - 1.05f * t
+            val beta = 2.2f - 1.4f * t
+            val dead = .0005f + .004f * t
+            fx = HandGestures.OneEuro(minCutoff = cutoff, beta = beta, deadZone = dead)
+            fy = HandGestures.OneEuro(minCutoff = cutoff, beta = beta, deadZone = dead)
+            fz = HandGestures.OneEuro(minCutoff = cutoff * .55f, beta = beta * .5f, deadZone = dead * 1.7f)
+        }
 
         @Synchronized
         fun update(raw: HandState) {
@@ -374,6 +449,18 @@ class HandTrackingService : LifecycleService() {
                 x = fx.filter(raw.x, ns)
                 y = fy.filter(raw.y, ns)
                 z = fz.filter(raw.z, ns)
+                val incoming = floatArrayOf(raw.thumbCurl, raw.indexCurl, raw.middleCurl, raw.ringCurl, raw.pinkyCurl)
+                for (i in curls.indices) curls[i] += .52f * (incoming[i] - curls[i])
+                var dot = rotation[0] * raw.qx + rotation[1] * raw.qy + rotation[2] * raw.qz + rotation[3] * raw.qw
+                val sign = if (dot < 0f) -1f else 1f
+                dot = kotlin.math.abs(dot)
+                val blend = if (first || dot < .35f) 1f else .42f
+                rotation[0] += blend * (raw.qx * sign - rotation[0])
+                rotation[1] += blend * (raw.qy * sign - rotation[1])
+                rotation[2] += blend * (raw.qz * sign - rotation[2])
+                rotation[3] += blend * (raw.qw * sign - rotation[3])
+                val qn = sqrt(rotation.sumOf { (it * it).toDouble() }.toFloat()).coerceAtLeast(.0001f)
+                for (i in rotation.indices) rotation[i] /= qn
                 lastSeenMs = now
                 if (raw.pinch) pinchUntilMs = now + 90L
                 palmToFace = raw.palmToFace
@@ -403,10 +490,38 @@ class HandTrackingService : LifecycleService() {
                 y = y,
                 z = z,
                 pinch = handPresent && now < pinchUntilMs,
-                palmToFace = handPresent && palmToFace
+                palmToFace = handPresent && palmToFace,
+                thumbCurl = curls[0], indexCurl = curls[1], middleCurl = curls[2],
+                ringCurl = curls[3], pinkyCurl = curls[4],
+                qx = rotation[0], qy = rotation[1], qz = rotation[2], qw = rotation[3]
             )
         }
     }
+
+    /** Quaternion from a column-major orthonormal palm basis. */
+    private fun matrixQuaternion(right: Vec3, up: Vec3, forward: Vec3): FloatArray {
+        val m00 = right.x; val m01 = up.x; val m02 = forward.x
+        val m10 = right.y; val m11 = up.y; val m12 = forward.y
+        val m20 = right.z; val m21 = up.z; val m22 = forward.z
+        val trace = m00 + m11 + m22
+        val q = FloatArray(4)
+        if (trace > 0f) {
+            val s = sqrt(trace + 1f) * 2f; q[3] = .25f * s
+            q[0] = (m21 - m12) / s; q[1] = (m02 - m20) / s; q[2] = (m10 - m01) / s
+        } else if (m00 > m11 && m00 > m22) {
+            val s = sqrt(1f + m00 - m11 - m22) * 2f; q[3] = (m21 - m12) / s
+            q[0] = .25f * s; q[1] = (m01 + m10) / s; q[2] = (m02 + m20) / s
+        } else if (m11 > m22) {
+            val s = sqrt(1f + m11 - m00 - m22) * 2f; q[3] = (m02 - m20) / s
+            q[0] = (m01 + m10) / s; q[1] = .25f * s; q[2] = (m12 + m21) / s
+        } else {
+            val s = sqrt(1f + m22 - m00 - m11) * 2f; q[3] = (m10 - m01) / s
+            q[0] = (m02 + m20) / s; q[1] = (m12 + m21) / s; q[2] = .25f * s
+        }
+        return q
+    }
+
+    private data class Vec3(val x: Float, val y: Float, val z: Float)
 
     private val Boolean.i get() = if (this) 1 else 0
 

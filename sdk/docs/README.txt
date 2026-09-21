@@ -13,6 +13,9 @@ PhoneXR SDK
   docs/porting.txt        Как перенести игру и что перенести нельзя.
   docs/protocol.txt       Формат потока данных PhoneXR.
   docs/manifest.txt       Что нужно в манифесте своей игры, чтобы не было чёрного экрана.
+  docs/engines.txt        Подключение Unity, Godot 4 и Lua-движков.
+  docs/api.txt            PhoneXR Developer API: OpenXR, PH5, lifecycle и публикация.
+  docs/ai-prompts.txt     Полные промты для генерации PhoneXR-проектов.
 
 Сборка библиотеки и тесты:
 

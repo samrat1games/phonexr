@@ -22,7 +22,6 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import zone.ien.hig.CupertinoText
-import zone.ien.hig.section.SectionScope
 import zone.ien.hig.theme.CupertinoTheme
 
 class AboutActivity : ComponentActivity() {
@@ -78,7 +77,7 @@ class AboutActivity : ComponentActivity() {
 
     /** A person from the team: the role and their Telegram, which opens on a tap. */
     @Composable
-    private fun SectionScope.Person(role: String, telegram: String) {
+    private fun HigScope.Person(role: String, telegram: String) {
         HigLink(role, value = telegram) {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/${telegram.removePrefix("@")}")))
         }

@@ -49,9 +49,13 @@ object Calls {
     /** Remote hands: 21 (x, y) points each, camera image coordinates 0..1. */
     @Volatile var remoteHands: List<FloatArray> = emptyList()
         private set
+    /** Low-rate camera texture for the hand silhouettes; full edition only. */
+    @Volatile var remoteHandImage: Bitmap? = null
+        private set
 
     /** Our own hands (x, y, z per landmark), set by the VR home. */
     @Volatile var localHands: () -> List<FloatArray> = { emptyList() }
+    @Volatile var localHandImage: () -> Bitmap? = { null }
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
 
     private var context: Context? = null
@@ -67,6 +71,7 @@ object Calls {
     private val chunks = HashMap<Int, String>()
     private var chunkPoints: String? = null
     private var greeted = false
+    private var lastHandImageAt = 0L
 
     fun listen(listener: () -> Unit) = listeners.add(listener)
     fun unlisten(listener: () -> Unit) = listeners.remove(listener)
@@ -194,6 +199,11 @@ object Calls {
                 remoteRound = payload.optDouble("r", .5).toFloat()
                 remoteTalking = payload.optBoolean("t")
                 remoteHands = decodeHands(payload.optString("h"))
+                payload.optString("hv").takeIf { it.isNotEmpty() }?.let { encoded ->
+                    runCatching { Base64.decode(encoded, Base64.NO_WRAP) }.getOrNull()?.let { bytes ->
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { remoteHandImage = it }
+                    }
+                }
                 payload.optString("a").takeIf { it.isNotEmpty() }?.let { play(Base64.decode(it, Base64.NO_WRAP)) }
             }
             "bye" -> reset("${peer?.name ?: "Собеседник"} завершил звонок")
@@ -237,6 +247,7 @@ object Calls {
         room?.let { realtime?.leave(it) }
         remoteFace = null
         remoteHands = emptyList()
+        remoteHandImage = null
         remoteMouth = 0f
         synchronized(pending) { pending.reset() }
     }
@@ -246,11 +257,24 @@ object Calls {
         val topic = room ?: return
         val v = voice
         val audio = synchronized(pending) { pending.toByteArray().also { pending.reset() } }
+        val hands = if (BuildConfig.LITE) emptyList() else localHands()
         val state = JSONObject()
             .put("m", if (muted) 0.0 else (v?.mouthOpen ?: 0f).toDouble())
             .put("r", (v?.mouthRound ?: .5f).toDouble())
             .put("t", !muted && v?.talking == true)
-            .put("h", encodeHands(localHands()))
+            .put("h", encodeHands(hands))
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!BuildConfig.LITE && hands.isNotEmpty() && now - lastHandImageAt >= 200L) {
+            lastHandImageAt = now
+            localHandImage()?.let { image ->
+                val bytes = ByteArrayOutputStream().also {
+                    @Suppress("DEPRECATION")
+                    image.compress(Bitmap.CompressFormat.WEBP, 38, it)
+                }.toByteArray()
+                image.recycle()
+                state.put("hv", Base64.encodeToString(bytes, Base64.NO_WRAP))
+            }
+        }
         if (!muted && audio.isNotEmpty()) state.put("a", Base64.encodeToString(audio, Base64.NO_WRAP))
         realtime?.broadcast(topic, "s", state)
     }

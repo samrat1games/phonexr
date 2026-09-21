@@ -17,6 +17,8 @@ class HeadTracker(private val sensors: SensorManager, private val display: () ->
     val head = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
     private val rotation = FloatArray(9)
     @Volatile private var yawOffset = Float.NaN
+    /** In a car or a train the world turns under the user; that slow turn is followed and removed. */
+    @Volatile var travelMode = false
     /** Recent head poses with sensor timestamps (elapsedRealtimeNanos), newest last. */
     private val history = Array(HISTORY) { FloatArray(16) }
     private val historyTimes = LongArray(HISTORY)
@@ -70,6 +72,14 @@ class HeadTracker(private val sensors: SensorManager, private val display: () ->
         val m = arrayOf(rd[0], rd[2], FloatArray(3) { -rd[1][it] })
         val yaw = atan2(m[0][2], m[2][2])
         if (yawOffset.isNaN()) yawOffset = yaw
+        // Travel mode: the centre creeps after the yaw, so a turning car takes the view nowhere
+        // while a turn of the head still does everything it should.
+        if (travelMode) {
+            var drift = yaw - yawOffset
+            while (drift > Math.PI) drift -= 2 * Math.PI.toFloat()
+            while (drift < -Math.PI) drift += 2 * Math.PI.toFloat()
+            yawOffset += drift * TRAVEL_CATCH_UP
+        }
         val gl = FloatArray(16)
         for (row in 0..2) for (col in 0..2) gl[col * 4 + row] = m[row][col]
         gl[15] = 1f
@@ -88,5 +98,7 @@ class HeadTracker(private val sensors: SensorManager, private val display: () ->
     private companion object {
         /** About half a second of poses at the sensor's fastest rate. */
         const val HISTORY = 128
+        /** How fast the centre follows the vehicle: slow enough that head turns are untouched. */
+        const val TRAVEL_CATCH_UP = .004f
     }
 }

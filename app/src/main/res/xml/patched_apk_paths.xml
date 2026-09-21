@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="patched" path="patched/" />
+    <!-- Скачанное из магазина: не в кэше, чтобы Android не стёр игру посреди загрузки. -->
+    <files-path name="store" path="store/" />
 </paths>

@@ -3,7 +3,6 @@ package com.samrat.cardboardhands
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.os.Bundle
 import android.view.Gravity
@@ -27,38 +26,35 @@ import kotlin.concurrent.thread
 import kotlin.math.abs
 
 /**
- * Persona capture with the phone out of the headset: the front camera looks at the user, waits
- * for a steady, straight face in the middle, takes the picture and builds the Persona from it.
+ * Guided Persona scan. The face is sampled from several useful angles (the back of the head is not
+ * required); the on-device face/segmentation models turn the best frontal sample into the Persona.
  */
 class PersonaCaptureActivity : ComponentActivity() {
-    private lateinit var preview: ImageView
-    private lateinit var status: TextView
+    private val previews = ArrayList<ImageView>(2)
+    private val statuses = ArrayList<TextView>(2)
     private val executor = Executors.newSingleThreadExecutor()
     private var landmarker: FaceLandmarker? = null
     private val done = AtomicBoolean(false)
     private var goodFrames = 0
     private var lastTimestamp = 0L
+    private var poseIndex = 0
+    private val captured = LinkedHashMap<String, Bitmap>()
+
+    private enum class Pose(val prompt: String) {
+        FRONT("Смотрите прямо"),
+        LEFT("Медленно поверните голову влево"),
+        RIGHT("Теперь поверните голову вправо"),
+        UP("Слегка поднимите подбородок"),
+        DOWN("Слегка опустите подбородок"),
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        preview = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setBackgroundColor(Color.BLACK) }
-        status = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 22f; gravity = Gravity.CENTER
-            setShadowLayer(8f, 0f, 2f, Color.BLACK)
-            text = "Держите телефон перед лицом и смотрите в камеру"
-        }
-        val skip = Button(this).apply { text = "Пропустить"; setOnClickListener { finishWith(false) } }
-        val bottom = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(48, 0, 48, 96)
-            addView(status)
-            addView(skip)
-        }
-        setContentView(FrameLayout(this).apply {
-            addView(preview)
-            addView(FaceGuide(this@PersonaCaptureActivity))
-            addView(bottom, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        L10n.init(this)
+        // The phone stays landscape in Cardboard: duplicate the scanner for the left and right lens.
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            repeat(2) { addView(eyeView(), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)) }
         })
         executor.execute {
             landmarker = runCatching {
@@ -82,43 +78,90 @@ class PersonaCaptureActivity : ComponentActivity() {
                     image.close()
                 }
             }
-            runCatching { provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, analysis) }
-                .onFailure { status.text = "Фронтальная камера недоступна" }
+            // The outward-facing camera is the headset camera; the phone stays in Cardboard.
+            provider.unbindAll()
+            runCatching { provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis) }
+                .onFailure { setStatus(tr("Камера шлема недоступна")) }
         }, ContextCompat.getMainExecutor(this))
     }
 
+    private fun eyeView(): FrameLayout {
+        val preview = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setBackgroundColor(Color.BLACK) }
+        val status = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 16f; gravity = Gravity.CENTER
+            setShadowLayer(8f, 0f, 2f, Color.BLACK)
+            text = tr("Не вынимайте телефон · покажите лицо камере шлема")
+        }
+        previews += preview
+        statuses += status
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(24, 0, 24, 28)
+            addView(status)
+            addView(Button(this@PersonaCaptureActivity).apply {
+                text = tr("Пропустить")
+                setOnClickListener { finishWith(false) }
+            })
+        }
+        return FrameLayout(this).apply {
+            addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(FaceGuide(this@PersonaCaptureActivity))
+            addView(bottom, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        }
+    }
+
+    private fun setStatus(value: String) = runOnUiThread { statuses.forEach { it.text = value } }
+
     private fun analyze(frame: Bitmap, timestamp: Long) {
-        // The user sees themselves like in a mirror; the Persona keeps the real (unmirrored) face.
-        val mirrored = Bitmap.createBitmap(frame, 0, 0, frame.width, frame.height, Matrix().apply { preScale(-1f, 1f) }, true)
-        runOnUiThread { preview.setImageBitmap(mirrored) }
+        runOnUiThread { previews.forEach { it.setImageBitmap(frame) } }
         val face = landmarker ?: return
         val stamp = maxOf(timestamp, lastTimestamp + 1).also { lastTimestamp = it }
         val points = face.detectForVideo(BitmapImageBuilder(frame).build(), stamp).faceLandmarks().firstOrNull()
         val message = when {
-            points == null -> { goodFrames = 0; "Лицо не видно" }
+            points == null -> { goodFrames = 0; tr("Лицо не видно") }
             else -> {
                 val nose = points[1]; val left = points[234]; val right = points[454]
                 val width = right.x() - left.x()
                 val centred = abs((left.x() + right.x()) / 2 - .5f) < .12f && abs(nose.y() - .45f) < .15f
-                val straight = abs((nose.x() - left.x()) / width - .5f) < .1f
+                val turn = (nose.x() - left.x()) / width
                 val near = abs(width) > .28f
+                val pose = Pose.entries[poseIndex]
+                val matchesPose = when (pose) {
+                    Pose.FRONT -> abs(turn - .5f) < .10f
+                    Pose.LEFT -> turn < .42f
+                    Pose.RIGHT -> turn > .58f
+                    // Pitch estimates vary by face; movement plus a short steady hold is more robust
+                    // than rejecting valid users with a fixed anatomical threshold.
+                    Pose.UP, Pose.DOWN -> centred
+                }
                 when {
-                    !near -> { goodFrames = 0; "Поднесите телефон ближе" }
-                    !centred -> { goodFrames = 0; "Лицо в центр рамки" }
-                    !straight -> { goodFrames = 0; "Смотрите прямо в камеру" }
-                    else -> { goodFrames++; "Не двигайтесь…" }
+                    !near -> { goodFrames = 0; tr("Приблизьте лицо к камере шлема") }
+                    !centred -> { goodFrames = 0; tr("Лицо в центр рамки") }
+                    !matchesPose -> { goodFrames = 0; tr(pose.prompt) }
+                    else -> { goodFrames++; "${tr(pose.prompt)} · ${poseIndex + 1}/${Pose.entries.size}" }
                 }
             }
         }
-        runOnUiThread { status.text = message }
-        if (goodFrames >= 12 && done.compareAndSet(false, true)) {
-            runOnUiThread { status.text = "Создаю персону…" }
-            val picture = frame.copy(Bitmap.Config.ARGB_8888, false)
+        setStatus(message)
+        if (goodFrames >= 8) {
+            val pose = Pose.entries[poseIndex]
+            captured.remove(pose.name.lowercase())?.recycle()
+            captured[pose.name.lowercase()] = frame.copy(Bitmap.Config.ARGB_8888, false)
+            goodFrames = 0
+            poseIndex++
+            if (poseIndex < Pose.entries.size) {
+                setStatus(tr(Pose.entries[poseIndex].prompt))
+                return
+            }
+        }
+        if (poseIndex >= Pose.entries.size && done.compareAndSet(false, true)) {
+            setStatus(tr("Создаю персону…"))
             thread {
-                val error = Persona.build(this, picture)
+                val error = Persona.buildScan(this, captured)
                 runOnUiThread {
                     if (error == null) finishWith(true)
-                    else { status.text = error; done.set(false); goodFrames = 0 }
+                    else { setStatus(error); done.set(false); goodFrames = 0 }
                 }
             }
         }

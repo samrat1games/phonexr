@@ -1,0 +1,34 @@
+PhoneXR Developer API
+=====================
+
+PhoneXR-приложение строится под PhoneXR, а не под Quest. Основной графический API — OpenXR;
+дополнительный PhoneXR Input API сообщает сырые жесты и Joy-Con.
+
+1. OpenXR
+   Используйте стандартный Android OpenXR loader и профили Oculus Touch/Khronos Simple Controller.
+   PhoneXR Runtime предоставляет голову, левую/правую руку, позы, trigger, squeeze, A/X, B/Y,
+   menu и стики. В манифест скопируйте обязательные элементы из manifest.txt.
+
+2. PhoneXR Input API
+   Транспорт: UDP 127.0.0.1:42425, ASCII, версия пакета PH5, до 60 обновлений/с.
+   Готовые клиенты: src/main/kotlin/com/phonexr/sdk/PhoneXRInput.kt для Kotlin/Java и
+   runtime/phonexr_input.h для C/C++. Полная схема находится в protocol.txt.
+
+   В PH6 каждая рука также содержит thumbCurl/indexCurl/middleCurl/ringCurl/pinkyCurl
+   (в C: thumb_curl/index_curl/middle_curl/ring_curl/pinky_curl), значения 0..1. Это позволяет
+   приложению строить собственную позу пальцев без выбора одного фиксированного жеста.
+
+3. Жизненный цикл
+   Пользователь запускает игру из PhoneXR. PhoneXR включает камеру и поток API до старта Activity.
+   Игра открывает порт 42425 неблокирующе, всегда берёт последний пакет и продолжает работать через
+   OpenXR, если дополнительный поток временно недоступен.
+
+4. Совместимость
+   Собирайте arm64-v8a, не требуйте конкретную модель гарнитуры, не встраивайте проверку магазина
+   Quest/Pico. Проверяйте 3DoF и 6DoF по флагу PHONEXR_FLAG_SIX_DOF и давайте пользователю играть
+   в обоих режимах.
+
+5. Публикация
+   Выпустите APK или .pxr и JSON магазина с name, url, icon, description и size. PhoneXR скачает,
+   подготовит и передаст APK системному установщику. Android требует установку пакета; запуск APK
+   как файла внутри другого приложения без контейнера невозможен.

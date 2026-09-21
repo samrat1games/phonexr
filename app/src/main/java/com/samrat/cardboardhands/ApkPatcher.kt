@@ -41,22 +41,47 @@ object ApkPatcher {
         }
     }
 
-    /** [gearVr] is true when the game draws through VrApi and got the PhoneXR adapter. */
-    data class Result(val apk: File, val changes: List<String>, val gearVr: Boolean)
+    /** [vrApi] is true when the game draws through VrApi and got the PhoneXR adapter. */
+    data class Result(
+        val apk: File,
+        val changes: List<String>,
+        val vrApi: Boolean,
+        /** Which headset the build was made for, so the app calls it by its own name. */
+        val headset: GameLibrary.Headset = GameLibrary.Headset.UNKNOWN
+    )
 
     fun patch(context: Context, source: Uri): Result {
         val directory = File(context.cacheDir, "patched").apply { mkdirs() }
+        val copy = File(directory, "source.apk")
+        val input = sourceFile(context, source, copy)
+        return try {
+            patch(input, directory) { name ->
+                runCatching { context.assets.open(name).use { it.readBytes() } }.getOrNull()
+            }
+        } finally {
+            copy.delete()
+        }
+    }
+
+    /**
+     * The patcher itself, with nothing of Android in it: [input] is the game, [directory] is where
+     * the result goes and [assets] serves PhoneXR's own files (the OpenXR loader, the Gear VR
+     * adapter, the signing key). Written this way so a test can run the whole thing on a real APK.
+     */
+    fun patch(input: File, directory: File, assets: (String) -> ByteArray?): Result {
+        directory.mkdirs()
         val unsigned = File(directory, "unsigned.apk")
         val output = File(directory, "PhoneXR-patched.apk")
         unsigned.delete()
         output.delete()
-        val assets = HashMap<String, ByteArray?>()
-        fun asset(name: String) = assets.getOrPut(name) {
-            runCatching { context.assets.open(name).use { it.readBytes() } }.getOrNull()
-        }
+        val loaded = HashMap<String, ByteArray?>()
+        fun asset(name: String) = loaded.getOrPut(name) { assets(name) }
         val changes = mutableListOf<String>()
         var sawManifest = false
-        var gearVr = false
+        var unpackedLibs = false
+        var saved = 0L
+        var vrApi = false
+        var markers = emptySet<String>()
         var checksPurchase = false
         val abis = sortedSetOf<Abi>()
         val loaderIn = HashSet<Abi>()
@@ -65,16 +90,27 @@ object ApkPatcher {
 
         // The archive is read through its central directory, the way Android's installer reads it.
         // Walking local headers instead breaks on APKs that carry stray duplicate entries.
-        val copy = File(directory, "source.apk")
-        val input = sourceFile(context, source, copy)
-        try {
+        run {
             val counting = CountingOutputStream(BufferedOutputStream(FileOutputStream(unsigned)))
             ZipFile(input).use { archive ->
+                val names = archive.entries().toList().mapTo(HashSet()) { it.name }
+                val hasUnityOpenXr = names.any { it.endsWith("/libUnityOpenXR.so") } &&
+                    "assets/bin/Data/UnitySubsystems/UnityOpenXR/UnitySubsystemsManifest.json" in names
+                val hasFridaInjection = names.any { it.endsWith("/libfrda.so") } &&
+                    names.any { it.endsWith("/libfrda.config.so") }
+                var fridaCallsDisabled = 0
+                var unityLoaderChanged = false
+                // Builds for other processors are dead weight on the phone and go before anything is written.
+                val redundant = redundantAbis(archive.entries().toList())
                 ZipOutputStream(counting).use { zip ->
                     val written = HashSet<String>()
                     for (original in archive.entries()) {
                         val name = original.name
                         if (original.isDirectory || isOldSignature(name) || !written.add(name)) continue
+                        if (name.startsWith("lib/") && name.removePrefix("lib/").substringBefore('/') in redundant) {
+                            saved += original.compressedSize.coerceAtLeast(0)
+                            continue
+                        }
                         val fileName = name.substringAfterLast('/')
                         val abi = Abi.of(name)
                         if (abi != null) abis += abi
@@ -88,9 +124,37 @@ object ApkPatcher {
                         val data: ByteArray? = when {
                             name == MANIFEST -> {
                                 sawManifest = true
-                                val patched = AndroidManifestPatcher.patch(archive.getInputStream(original).use { it.readBytes() })
+                                val source = archive.getInputStream(original).use { it.readBytes() }
+                                markers = AndroidManifestPatcher.markers(source)
+                                val patched = AndroidManifestPatcher.patch(source)
                                 changes += patched.changes
                                 patched.bytes
+                            }
+                            hasFridaInjection && name.matches(Regex("classes(\\d*)\\.dex")) -> {
+                                val source = archive.getInputStream(original).use { it.readBytes() }
+                                DexPatcher.disableSystemLoadLibrary(source, "frda").also {
+                                    fridaCallsDisabled += it.disabledCalls
+                                }.bytes
+                            }
+                            hasUnityOpenXr && name == "assets/bin/Data/boot.config" -> {
+                                val source = archive.getInputStream(original).use { it.readBytes() }
+                                val text = source.toString(Charsets.UTF_8)
+                                val changed = text.replace(
+                                    Regex("(?m)^xrsdk-pre-init-library=OculusXRPlugin$"),
+                                    "xrsdk-pre-init-library=UnityOpenXR"
+                                )
+                                if (changed != text) unityLoaderChanged = true
+                                changed.toByteArray()
+                            }
+                            hasUnityOpenXr && name == "assets/bin/Data/RuntimeInitializeOnLoads.json" -> {
+                                val source = archive.getInputStream(original).use { it.readBytes() }
+                                val text = source.toString(Charsets.UTF_8)
+                                val oculusStartup = Regex(
+                                    """\{(?=[^{}]*\"assemblyName\"\s*:\s*\"Unity\.XR\.Oculus\")(?=[^{}]*\"className\"\s*:\s*\"OculusLoader\")(?=[^{}]*\"methodName\"\s*:\s*\"RuntimeLoadOVRPlugin\")[^{}]*\},?"""
+                                )
+                                val changed = oculusStartup.replace(text, "").replace(Regex(",\\s*]"), "]")
+                                if (changed != text) unityLoaderChanged = true
+                                changed.toByteArray()
                             }
                             abi != null && name == "lib/${abi.folder}/$LOADER" -> {
                                 loaderIn += abi
@@ -99,7 +163,7 @@ object ApkPatcher {
                             }
                             abi != null && name == "lib/${abi.folder}/$VRAPI" -> {
                                 vrapiIn += abi
-                                gearVr = true
+                                vrApi = true
                                 changes += "libvrapi.so (${abi.title}) заменён переходником Gear VR → OpenXR"
                                 requireNotNull(asset(abi.vrapiAsset)) {
                                     "Это игра Gear VR (${abi.title}), а в эту сборку PhoneXR не вложен переходник для неё"
@@ -117,8 +181,11 @@ object ApkPatcher {
                                 entry.compressedSize = data.size.toLong()
                                 entry.crc = CRC32().apply { update(data) }.value
                             }
-                        } else if (original.method == ZipEntry.STORED) {
+                        } else if (nativeLib || original.method == ZipEntry.STORED) {
                             // Stored game data can be hundreds of megabytes: copy it as a stream, never into memory.
+                            // Libraries are always stored, so Android maps them out of the APK instead of
+                            // unpacking a second copy on installation.
+                            if (nativeLib && original.method != ZipEntry.STORED) unpackedLibs = true
                             entry.method = ZipEntry.STORED
                             entry.size = original.size
                             entry.compressedSize = original.size
@@ -144,20 +211,54 @@ object ApkPatcher {
                         changes += "добавлен OpenXR loader PhoneXR (${abi.title})"
                     }
                 }
+                if (fridaCallsDisabled > 0) {
+                    changes += "отключён несовместимый Frida-инжектор, который падал до запуска Unity"
+                }
+                if (unityLoaderChanged) {
+                    changes += "Unity переключён с жёсткого OculusXR на стандартный OpenXR"
+                }
             }
-        } finally {
-            copy.delete()
         }
         require(sawManifest) { "Это не APK: внутри нет AndroidManifest.xml" }
         require(abis.isNotEmpty() || !otherLibs) {
             "В APK нет библиотек для ARM (arm64-v8a или armeabi-v7a) — на телефоне такая сборка не запустится"
         }
         if (Abi.ARM64 !in abis && abis.isNotEmpty()) changes += "32-битная игра: PhoneXR запустит её в 32-битном режиме"
-        sign(context, unsigned, output)
+        if (saved > 0) changes += "оптимизация: убраны библиотеки для других процессоров (−${size(saved)})"
+        if (unpackedLibs) changes += "оптимизация: библиотеки лежат в APK без сжатия — игра запускается быстрее"
+        sign(::asset, unsigned, output)
         unsigned.delete()
         if (changes.isEmpty()) changes += "APK уже подходит, изменена только подпись"
-        return Result(output, changes, gearVr)
+        return Result(output, changes, vrApi, GameLibrary.headsetOf(markers, Abi.ARM64 in abis))
     }
+
+    /**
+     * ABI folders the phone will never load: builds for other processors, and a 32-bit build the
+     * 64-bit one fully covers. Nothing is dropped when the APK has no ARM build at all — that case
+     * is an error the caller reports instead.
+     */
+    private fun redundantAbis(entries: List<ZipEntry>): Set<String> {
+        val libraries = HashMap<String, MutableSet<String>>()
+        for (entry in entries) {
+            if (entry.isDirectory || !entry.name.startsWith("lib/")) continue
+            val parts = entry.name.removePrefix("lib/").split('/')
+            if (parts.size >= 2) libraries.getOrPut(parts[0]) { mutableSetOf() } += parts.last()
+        }
+        val arm = libraries.keys.filter { folder -> Abi.entries.any { it.folder == folder } }
+        if (arm.isEmpty()) return emptySet()
+        val redundant = libraries.keys.filterNot { it in arm }.toMutableSet()
+        val sixtyFour = libraries[Abi.ARM64.folder]
+        if (sixtyFour != null) {
+            // A 32-bit copy goes only when the 64-bit build carries every library it has.
+            arm.filter { it != Abi.ARM64.folder }
+                .filter { sixtyFour.containsAll(libraries.getValue(it)) }
+                .forEach { redundant += it }
+        }
+        return redundant
+    }
+
+    private fun size(bytes: Long) = if (bytes >= 1L shl 20) "%.0f МБ".format(bytes / (1L shl 20).toDouble())
+    else "%.0f КБ".format(bytes / 1024.0)
 
     /** A file to open as a zip: installed games already are files, picked documents are copied first. */
     private fun sourceFile(context: Context, source: Uri, copy: File): File {
@@ -178,15 +279,21 @@ object ApkPatcher {
         extra = alignmentExtra(offset, name, 16_384)
     }
 
-    private fun sign(context: Context, input: File, output: File) {
+    private fun sign(asset: (String) -> ByteArray?, input: File, output: File) {
         val store = KeyStore.getInstance("PKCS12")
-        context.assets.open("phonexr-signing.p12").use { store.load(it, "android".toCharArray()) }
+        val key64 = requireNotNull(asset("phonexr-signing.p12")) { "В сборке PhoneXR нет ключа подписи" }
+        key64.inputStream().use { store.load(it, "android".toCharArray()) }
         val key = store.getKey("androiddebugkey", "android".toCharArray()) as java.security.PrivateKey
         val certificate = store.getCertificate("androiddebugkey") as X509Certificate
         val signer = ApkSigner.SignerConfig.Builder("PhoneXR", key, listOf(certificate)).build()
         ApkSigner.Builder(listOf(signer))
             .setInputApk(input)
             .setOutputApk(output)
+            // Signing rewrites the archive, and left alone it re-aligns every uncompressed entry on
+            // 4 bytes, throwing away the 16 KB page alignment the libraries above were given. Android
+            // maps an uncompressed library straight out of the APK, so a library off its page makes
+            // the installer answer "приложение не установлено" and nothing else.
+            .setAlignmentPreserved(true)
             .setV1SigningEnabled(true)
             .setV2SigningEnabled(true)
             .setV3SigningEnabled(true)

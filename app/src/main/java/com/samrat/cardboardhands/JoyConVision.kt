@@ -33,6 +33,39 @@ class JoyConVision {
             /** Official "neon blue" and "neon red" Joy-Con. */
             val NEON_BLUE = Target(193f, .92f, .88f)
             val NEON_RED = Target(5f, .84f, .98f)
+            val NEON_YELLOW = Target(66f, .98f, .98f)
+            val NEON_GREEN = Target(112f, .98f, .86f)
+            val NEON_PINK = Target(340f, .80f, .98f)
+            val NEON_PURPLE = Target(287f, .96f, .88f)
+            val NEON_ORANGE = Target(38f, .96f, .96f)
+            val BLUE = Target(235f, .72f, .94f)
+            val PASTEL_PINK = Target(350f, .38f, .98f)
+            val PASTEL_GREEN = Target(150f, .35f, .92f)
+
+            /**
+             * The colours Joy-Con come in, for picking instead of teaching the camera. Grey and
+             * white ones are not here: the camera finds a Joy-Con by its colour, and those have
+             * none to find — for them use "запомнить цвет" in front of a plain background.
+             */
+            val PRESETS: List<Pair<String, Target>> = listOf(
+                "Неоновый синий" to NEON_BLUE,
+                "Неоновый красный" to NEON_RED,
+                "Неоновый жёлтый" to NEON_YELLOW,
+                "Неоновый зелёный" to NEON_GREEN,
+                "Неоновый розовый" to NEON_PINK,
+                "Неоновый фиолетовый" to NEON_PURPLE,
+                "Неоновый оранжевый" to NEON_ORANGE,
+                "Синий" to BLUE,
+                "Пастельно‑розовый" to PASTEL_PINK,
+                "Пастельно‑зелёный" to PASTEL_GREEN,
+            )
+
+            /** The preset closest to [target], so the settings screen can show what is chosen. */
+            fun nameOf(target: Target): String? = PRESETS.firstOrNull { (_, preset) ->
+                kotlin.math.abs(preset.hue - target.hue) < 6f &&
+                    kotlin.math.abs(preset.saturation - target.saturation) < .06f &&
+                    kotlin.math.abs(preset.value - target.value) < .06f
+            }?.first
 
             fun decode(text: String?): Target? {
                 val parts = text?.split(';')?.mapNotNull { it.toFloatOrNull() } ?: return null

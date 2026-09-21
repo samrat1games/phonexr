@@ -172,11 +172,9 @@ class JoyConCameraActivity : ComponentActivity() {
             CameraPreview()
 
             HigSection(footer = message) {
-                SectionItem(trailingContent = {
-                    CupertinoSwitch(checked = state.cameraJoyCons, onCheckedChange = { update(state.copy(cameraJoyCons = it)) })
-                }) { CupertinoText("Отслеживать Joy‑Con камерой") }
-                HigRow("Левый", describe(left), detailColor = if (left.found) CupertinoColors.systemGreen else CupertinoColors.systemRed)
-                HigRow("Правый", describe(right), detailColor = if (right.found) CupertinoColors.systemGreen else CupertinoColors.systemRed)
+                HigSwitchRow("Отслеживать Joy‑Con камерой", state.cameraJoyCons) { update(state.copy(cameraJoyCons = it)) }
+                HigRow("Левый", describe(left), detailColor = if (left.found) HigColors.good else HigColors.bad)
+                HigRow("Правый", describe(right), detailColor = if (right.found) HigColors.good else HigColors.bad)
             }
 
             HigSection(
@@ -189,6 +187,28 @@ class JoyConCameraActivity : ComponentActivity() {
                 HigLink("Неоновые синий и красный") {
                     update(state.copy(leftColor = JoyConVision.Target.NEON_BLUE, rightColor = JoyConVision.Target.NEON_RED))
                     message = "Стандартные цвета восстановлены"
+                }
+            }
+
+            HigSection(
+                title = "Цвет левого Joy‑Con",
+                footer = "Выберите цвет своего Joy‑Con — учить камеру тогда не нужно. Серые и белые Joy‑Con " +
+                    "в списке нет: камера находит их по цвету, а у этих его нет — для них нажмите «запомнить цвет»."
+            ) {
+                JoyConVision.Target.PRESETS.forEach { (title, colour) ->
+                    HigChoice(title, null, sameColour(state.leftColor, colour)) {
+                        update(state.copy(leftColor = colour))
+                        message = "Левый Joy‑Con: $title"
+                    }
+                }
+            }
+
+            HigSection(title = "Цвет правого Joy‑Con") {
+                JoyConVision.Target.PRESETS.forEach { (title, colour) ->
+                    HigChoice(title, null, sameColour(state.rightColor, colour)) {
+                        update(state.copy(rightColor = colour))
+                        message = "Правый Joy‑Con: $title"
+                    }
                 }
             }
 
@@ -207,6 +227,10 @@ class JoyConCameraActivity : ComponentActivity() {
             ) {}
         }
     }
+
+    /** The chosen colour, when it is one of the ready-made ones rather than a taught one. */
+    private fun sameColour(target: JoyConVision.Target, preset: JoyConVision.Target) =
+        JoyConVision.Target.nameOf(target) != null && JoyConVision.Target.nameOf(target) == JoyConVision.Target.nameOf(preset)
 
     @Composable
     private fun CameraPreview() {

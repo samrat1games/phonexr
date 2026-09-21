@@ -11,7 +11,7 @@ import java.net.URL
 import java.net.URLEncoder
 
 /**
- * The PhoneXR app store: games are files in Supabase Storage, folder "vr_games".
+ * The PhoneXR app store: games are files in Supabase Storage, bucket "vr_games".
  *
  * Layout the store understands:
  *   vr_games/Game.apk                     a game as a single file (.apk or .pxr)
@@ -33,13 +33,14 @@ object GameStore {
     /** GitHub repository whose root *.json link files are store games too. */
     private const val GITHUB_REPO = "samrat1games/phonexr"
 
-    /** Where "vr_games" may live: its own bucket, or a folder inside a common one. */
-    private val locations = listOf(
-        Location("vr_games", ""),
-        Location("files", "vr_games/"),
-        Location("public", "vr_games/"),
-        Location("storage", "vr_games/"),
-    )
+    /**
+     * Where the store may live: its own bucket, or a folder inside a common one. Supabase allows
+     * both spellings of the name, so a bucket made by hand may be "vr_games" or "vr-games": both
+     * are tried, so an older store bucket keeps working.
+     */
+    private val locations = listOf(FOLDER, "vr-games").flatMap { folder ->
+        listOf(Location(folder, "")) + listOf("files", "public", "storage").map { Location(it, "$folder/") }
+    }
 
     private data class Location(val bucket: String, val prefix: String)
 
@@ -64,7 +65,7 @@ object GameStore {
 
     private val installable = setOf("apk", "pxr")
     private val iconNames = setOf("icon.png", "icon.jpg", "icon.jpeg", "icon.webp")
-    @Volatile private var found: Location? = null
+    @Volatile private var found: List<Location>? = null
 
     /** Network call, run off the main thread. Supabase and GitHub each fill in what they can. */
     fun list(): List<Item> {
@@ -95,7 +96,7 @@ object GameStore {
      * .mcworld, .mctemplate), plus link files there (JSON with "name" and "url") for big ones.
      */
     fun mods(): List<Item> {
-        val location = found ?: locate()
+        val location = locations().firstOrNull() ?: return emptyList()
         val folder = location.prefix + MinecraftMods.FOLDER + "/"
         val entries = runCatching { listFolder(location.bucket, folder) }.getOrDefault(emptyList())
         val items = ArrayList<Item>()
@@ -118,8 +119,12 @@ object GameStore {
         return items.sortedBy { it.title.lowercase() }
     }
 
-    private fun supabaseItems(): List<Item> {
-        val location = found ?: locate()
+    private fun supabaseItems(): List<Item> = locations().flatMap { location ->
+        runCatching { itemsIn(location) }.getOrDefault(emptyList())
+    }
+
+    /** Games of one bucket (or of one folder inside a shared bucket). */
+    private fun itemsIn(location: Location): List<Item> {
         val items = mutableListOf<Item>()
         for (entry in listFolder(location.bucket, location.prefix)) {
             val name = entry.getString("name")
@@ -184,8 +189,13 @@ object GameStore {
 
     /** Network call: a text file from the store folder, such as pwa.json. */
     fun readText(name: String): String {
-        val location = found ?: locate()
-        return open(location.bucket, location.prefix + name).use { it.inputStream.readBytes().toString(Charsets.UTF_8) }
+        val failures = mutableListOf<Throwable>()
+        for (location in locations()) {
+            runCatching { open(location.bucket, location.prefix + name).use { it.inputStream.readBytes().toString(Charsets.UTF_8) } }
+                .onSuccess { return it }
+                .onFailure { failures += it }
+        }
+        throw failures.firstOrNull() ?: FileNotFoundException("Файл «$name» не найден в магазине")
     }
 
     fun description(item: Item): String? = item.descriptionText ?: item.descriptionPath?.let { path ->
@@ -205,6 +215,12 @@ object GameStore {
     fun download(item: Item, directory: File, onProgress: (Float) -> Unit): File {
         directory.mkdirs()
         directory.listFiles()?.forEach { it.delete() }
+        // A half-downloaded game is the usual reason a store download "just stops": say it first.
+        if (item.size > 0 && directory.usableSpace in 1 until item.size + (64L shl 20)) {
+            throw StoreException(
+                "На телефоне не хватает места: нужно ${megabytes(item.size)}, свободно ${megabytes(directory.usableSpace)}"
+            )
+        }
         // Mods keep their own extension: Minecraft recognises them by it.
         val extension = (item.url?.substringBefore('?') ?: item.path).substringAfterLast('.', "").lowercase()
             .takeIf { MinecraftMods.isMod("x.$it") } ?: item.extension
@@ -235,19 +251,22 @@ object GameStore {
     }
 
     /**
-     * Supabase answers a listing it may not show with an empty list, not an error, so the first
-     * location with files wins. With none, the store stays on the "vr_games" bucket and shows it empty.
+     * Every place the store actually has files in. Supabase answers a listing it may not show with an
+     * empty list rather than an error, so an empty one simply carries no games. Both spellings of the
+     * bucket are read, so games put in either one are all in the store.
      */
-    private fun locate(): Location {
+    private fun locations(): List<Location> {
+        found?.let { return it }
         var reachable = false
+        val live = mutableListOf<Location>()
         for (location in locations) {
             val (code, body) = request("POST", "/storage/v1/object/list/${location.bucket}", listBody(location.prefix))
             if (code != 200) continue
             reachable = true
-            if (JSONArray(body).length() > 0) return location.also { found = it }
+            if (JSONArray(body).length() > 0) live += location
         }
         if (!reachable) throw StoreException("Сервер магазина недоступен. Проверьте интернет.")
-        return locations.first()
+        return live.ifEmpty { listOf(locations.first()) }.also { found = it }
     }
 
     /** Shown when the store is empty: either there are no games yet, or reading is not allowed. */
@@ -337,6 +356,8 @@ object GameStore {
         }
         return connection
     }
+
+    private fun megabytes(bytes: Long) = "%.0f МБ".format(bytes / (1L shl 20).toDouble())
 
     private fun errorText(body: String) = runCatching { JSONObject(body).optString("message", body) }.getOrDefault(body)
 }
