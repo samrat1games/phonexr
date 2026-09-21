@@ -25,23 +25,29 @@ jobs:
           java-version: "17"
       - name: Лицензии Android SDK
         run: yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
-      - name: Сборка APK
-        run: ./gradlew :app:assembleFullDebug :app:assembleLiteDebug --no-daemon
+      - name: Сборка APK и SDK
+        run: ./gradlew :app:assembleFullDebug :app:assembleLiteDebug :sdk:build --no-daemon
       - name: Имя файла по версии
         id: name
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           NAME="PhoneXR-${TAG#v}.apk"
           LITE="PhoneXR-${TAG#v}-lite.apk"
+          SDK="PhoneXR-SDK-${TAG#v}.zip"
           cp app/build/outputs/apk/full/debug/app-full-debug.apk "$NAME"
           cp app/build/outputs/apk/lite/debug/app-lite-debug.apk "$LITE"
+          mkdir -p release-sdk/PhoneXR-SDK
+          cp sdk/build/libs/sdk.jar release-sdk/PhoneXR-SDK/PhoneXR-SDK.jar
+          cp -R sdk/docs sdk/runtime sdk/tools release-sdk/PhoneXR-SDK/
+          cd release-sdk && zip -qr "../$SDK" PhoneXR-SDK && cd ..
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "lite=$LITE" >> "$GITHUB_OUTPUT"
+          echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
       - name: В релиз
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view "${{ steps.name.outputs.tag }}" >/dev/null 2>&1 \
             || gh release create "${{ steps.name.outputs.tag }}" --title "PhoneXR ${{ steps.name.outputs.tag }}" --generate-notes
-          gh release upload "${{ steps.name.outputs.tag }}" "${{ steps.name.outputs.name }}" "${{ steps.name.outputs.lite }}" --clobber
+          gh release upload "${{ steps.name.outputs.tag }}" "${{ steps.name.outputs.name }}" "${{ steps.name.outputs.lite }}" "${{ steps.name.outputs.sdk }}" --clobber
